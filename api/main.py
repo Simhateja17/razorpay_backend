@@ -15,11 +15,26 @@ from pydantic import BaseModel, Field
 from marketplace_backend.agent_service import AgentNarrator
 from marketplace_backend.audit import AuditTrail
 from marketplace_backend.carts import ConflictError
-from marketplace_backend.routing import Intent
+from marketplace_backend.checkout import CheckoutRepository
+from marketplace_backend.evidence import CommerceEventLog, EvidenceLedger, Outbox
 from marketplace_backend.identity import AuthenticationError, IdentityService, Principal
+from marketplace_backend.inventory import InventoryRepository
 from marketplace_backend.merchant_backend import MerchantBackend
+from marketplace_backend.routing import Intent
 from marketplace_backend.store import Store
 from marketplace_backend.storefront_backend import StorefrontBackend
+
+from cartisan_agent import (
+    CartisanAgentConfig,
+    CartisanShoppingRuntime,
+    CommerceServices,
+    CoreCommercePort,
+    PresentationLedger,
+    SessionContext,
+    SessionState,
+    TurnStore,
+)
+from commerce_common.streaming import AgentEvent, to_sse
 
 db = Store(
     path=os.getenv("CARTISAN_DB_PATH"),
@@ -30,6 +45,32 @@ identity = IdentityService(db)
 shop = StorefrontBackend(db, audit)
 merchant = MerchantBackend(db, audit, shop)
 narrator = AgentNarrator()
+
+# The Claude runtime (Phase 4). The shopping conversation runs on the Messages API loop
+# in `cartisan_agent`; `marketplace_backend.routing` still decides checkout precedence,
+# but it now steers that loop instead of standing in for it.
+agent_config = CartisanAgentConfig()
+ledger = EvidenceLedger(db)
+commerce = CommerceServices(
+    port=CoreCommercePort(
+        db,
+        checkout=CheckoutRepository(
+            db, InventoryRepository(db), ledger, Outbox(db), CommerceEventLog(db)
+        ),
+        config=agent_config,
+    ),
+    presentations=PresentationLedger(db, agent_config),
+)
+turn_store = TurnStore(db, ledger)
+shopping_agent = CartisanShoppingRuntime(
+    services=commerce, store=db, config=agent_config, turns=turn_store
+)
+
+# The conversation transcript lives in this process. The turn state machine that
+# reconnect and recovery need is durable (the `turns` table); a transcript that
+# survives a restart is Phase 7's, with the audit surfaces.
+_transcripts: dict[str, list[dict]] = {}
+_states: dict[str, SessionState] = {}
 
 app = FastAPI(title="Cartisan API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS","http://localhost:3000").split(","),
@@ -118,8 +159,47 @@ def database_health():
     db.rows("SELECT 1 AS ready")
     return {"status":"ok", "database":db.backend}
 
+def _conversation_key(principal: Principal, conversation_id: str) -> str:
+    # Keyed by principal as well as conversation: a conversation id arriving from a
+    # client carries no authority, and must never address another customer's transcript.
+    return f"{principal.id}:{conversation_id}"
+
+
 @app.post("/chat/storefront")
 async def storefront_chat(body: ChatRequest, principal: Principal = Depends(require_customer)):
+    """One agent turn, streamed. The events are `commerce_common.streaming.AgentEvent`
+    types; a client renders the ones it knows and ignores the rest."""
+    key = _conversation_key(principal, body.conversation_id)
+    messages = _transcripts.setdefault(key, [])
+    state = _states.setdefault(key, SessionState())
+    session = SessionContext(conversation_id=key, customer_id=principal.id)
+    messages.append({"role": "user", "content": body.message})
+
+    async def stream() -> AsyncIterator[str]:
+        try:
+            async for event in shopping_agent.stream_turn(messages, session, state):
+                yield to_sse(event)
+        except Exception:  # the turn is already marked failed; the client gets one line
+            yield to_sse(
+                AgentEvent.error("Something went wrong on that turn. Please try again.")
+            )
+        yield sse("done", {"ok": True})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/chat/storefront/resume")
+def storefront_resume(conversation_id: str, principal: Principal = Depends(require_customer)):
+    """What a reconnecting client should show: the turn still running, or the reply it
+    missed while it was away (ADR 0029)."""
+    resumed = turn_store.resume(_conversation_key(principal, conversation_id))
+    return resumed or {"state": "idle", "turn_id": None, "agent_message": None}
+
+
+@app.post("/chat/storefront/legacy")
+async def storefront_chat_legacy(body: ChatRequest, principal: Principal = Depends(require_customer)):
+    """The pre-Phase-4 path, kept only while the storefront UI still reads the legacy
+    flat catalogue. Phase 5 migrates that and deletes this."""
     customer_id = principal.id
     intent = shop.classify_intent(body.message)
 

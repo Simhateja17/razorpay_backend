@@ -1,8 +1,9 @@
-"""Phase 1 acceptance: establish authority.
+"""Phase 1 acceptance: authority, one durable cart, and deterministic checkout intent.
 
-The two acceptance criteria from CARTISAN_COMMERCE_ARCHITECTURE.md are:
-  1. the visible cart and the agent's cart read always agree; and
-  2. "complete the purchase" cannot invoke search or cart addition.
+The chat assertions run against `/chat/storefront/legacy`, the regex-routed endpoint
+the storefront UI still calls while it reads the legacy flat catalogue.
+`/chat/storefront` is now the Messages API loop, and the same guarantee is proven
+against it in tests/test_runtime_transcripts.py.
 """
 
 import pytest
@@ -57,9 +58,9 @@ def test_one_active_cart_per_customer_regardless_of_conversation(monkeypatch, sh
     """The same principal in two conversations reads and mutates one cart."""
     client, _ = client_for(monkeypatch, shop, ALICE)
 
-    client.post("/chat/storefront", json={"conversation_id": "morning",
+    client.post("/chat/storefront/legacy", json={"conversation_id": "morning",
                                           "message": "Please add the Aster Wireless Earbuds to my cart"})
-    client.post("/chat/storefront", json={"conversation_id": "evening",
+    client.post("/chat/storefront/legacy", json={"conversation_id": "evening",
                                           "message": "Please add the Aster Charger to my cart"})
 
     cart = client.get("/cart").json()
@@ -71,7 +72,7 @@ def test_visible_cart_and_agent_cart_read_agree(monkeypatch, shop):
     """Acceptance 1: the REST cart the UI renders is the row the agent turn returns."""
     client, _ = client_for(monkeypatch, shop, ALICE)
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "conversation_id": "c1", "message": "Please add the Aster Wireless Earbuds to my cart"})
     from_turn = sse_message(response.text)["cart"]
     from_rest = client.get("/cart").json()
@@ -163,7 +164,7 @@ def test_checkout_intent_never_searches_or_adds(monkeypatch, shop):
     monkeypatch.setattr(shop, "search", fail_search)
     monkeypatch.setattr(shop, "add_best_match", fail_add)
 
-    payload = sse_message(client.post("/chat/storefront", json={
+    payload = sse_message(client.post("/chat/storefront/legacy", json={
         "conversation_id": "c1", "message": "complete the purchase"}).text)
 
     assert payload["products"] == []

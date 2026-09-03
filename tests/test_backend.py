@@ -1,3 +1,9 @@
+"""Pre-Phase-4 backend behaviour. These exercise `/chat/storefront/legacy`, the
+regex-routed endpoint the storefront UI still calls while it reads the legacy flat
+catalogue; `/chat/storefront` is now the Messages API loop (tests/test_runtime_*).
+Phase 5 migrates the UI and deletes the legacy path along with these tests.
+"""
+
 import hashlib, hmac, json, re
 from types import SimpleNamespace
 
@@ -135,7 +141,7 @@ def test_storefront_chat_adds_requested_product(monkeypatch, services):
     monkeypatch.setattr(api_main, "narrator", StubNarrator())
     client = authed_client(api_main, "chat-add")
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Please add the Aster Wireless Earbuds to my cart",
     })
 
@@ -158,7 +164,7 @@ def test_storefront_chat_keeps_narration_in_inr(monkeypatch, services):
     monkeypatch.setattr(api_main, "narrator", StubNarrator())
     client = authed_client(api_main, "currency-check")
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Show me wireless earbuds",
     })
     payload = sse_message(response.text)
@@ -181,12 +187,12 @@ def test_storefront_chat_adds_from_previous_search(monkeypatch, services):
     monkeypatch.setattr(api_main, "narrator", StubNarrator())
     client = authed_client(api_main, "follow-up-add")
 
-    first = client.post("/chat/storefront", json={
+    first = client.post("/chat/storefront/legacy", json={
         "message": "Show me wireless earbuds",
     })
     assert first.status_code == 200
 
-    second = client.post("/chat/storefront", json={
+    second = client.post("/chat/storefront/legacy", json={
         "message": "Can you add one of them into cart",
     })
     assert second.status_code == 200
@@ -202,7 +208,7 @@ def test_storefront_chat_checkout_phrase_stages_without_adding(monkeypatch, serv
     shop.add_to_cart("checkout-chat", "P-EL-01", 1)
     client = authed_client(api_main, "checkout-chat")
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Alright leta complete the purchase ?",
     })
 
@@ -225,7 +231,7 @@ def test_storefront_chat_acknowledged_checkout_uses_authoritative_cart(monkeypat
     shop.add_to_cart("ack-checkout-chat", "P-EL-01", 1)
     client = authed_client(api_main, "ack-checkout-chat")
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Okay checkout",
     })
 
@@ -246,7 +252,7 @@ def test_empty_cart_checkout_request_does_not_add_from_search(monkeypatch, servi
     monkeypatch.setattr(api_main, "shop", shop)
     client = authed_client(api_main, "empty-checkout-chat")
 
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Please take me to checkout",
     })
 
@@ -271,10 +277,10 @@ def test_storefront_chat_does_not_add_stale_result_for_unknown_item(monkeypatch,
     monkeypatch.setattr(api_main, "narrator", StubNarrator())
     client = authed_client(api_main, "stale-add")
 
-    client.post("/chat/storefront", json={
+    client.post("/chat/storefront/legacy", json={
         "message": "Show me wireless earbuds",
     })
-    response = client.post("/chat/storefront", json={
+    response = client.post("/chat/storefront/legacy", json={
         "message": "Please add Nimbus Dead Stock to my cart",
     })
 

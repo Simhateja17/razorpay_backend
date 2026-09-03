@@ -20,7 +20,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from .evidence import Actor, CommerceEventLog, Correlation, EvidenceLedger, Outbox
+from .evidence import ORIGINS, Actor, CommerceEventLog, Correlation, EvidenceLedger, Outbox
 from .inventory import InsufficientStock, InventoryRepository
 from .state_machines import CHECKOUT_STAGE, ORDER, PAYMENT_ATTEMPT, TransitionError
 from .store import Store
@@ -122,12 +122,19 @@ class CheckoutRepository:
     # ---------------------------------------------------------- confirmation
 
     def confirm(self, *, stage_id: str, customer_id: str, current_cart_state_version: int,
-                correlation: Correlation | None = None) -> dict:
+                origin: str = "live_app", correlation: Correlation | None = None) -> dict:
         """Re-validate, create one pending order, and reserve stock — atomically.
 
         If any part fails, nothing is held and no order exists: the customer sees a
         refusal, not a half-made order with stock quietly locked behind it.
+
+        `origin` labels the order and the `order_created` event. It is `live_app`,
+        because the order was created by a person using the app; `razorpay_test`
+        labels evidence that came *from* the provider, and `seeded` labels the
+        generated history. Phase 7's audit views filter on exactly this (ADR 0032).
         """
+        if origin not in ORIGINS:
+            raise ValueError(f"unknown origin {origin!r}; expected one of {ORIGINS}")
         correlation = correlation or Correlation()
         stage = self.read_stage(stage_id)
         actor = Actor("customer", customer_id, "shopping")
@@ -168,7 +175,7 @@ class CheckoutRepository:
                     "state_version,created_at) VALUES (?,?,?,'pending_payment','INR',?,?,?,?,?,0,?,0,?)",
                     (order_id, customer_id, stage_id, stage["subtotal_minor"], stage["shipping_minor"],
                      stage["tax_minor"], stage["discount_minor"], stage["total_minor"],
-                     "razorpay_test", _now()))
+                     origin, _now()))
                 for line in stage["lines"]:
                     tx.execute(
                         "INSERT INTO commerce_order_lines (id,order_id,variant_id,quantity,"
@@ -181,7 +188,7 @@ class CheckoutRepository:
                 self.events.append(
                     event_type="order_created", subject_type="order", subject_id=order_id,
                     customer_id=customer_id, amount_minor=stage["total_minor"],
-                    origin="razorpay_test", correlation=correlation, tx=tx)
+                    origin=origin, correlation=correlation, tx=tx)
                 self.ledger.record(
                     actor=actor, action="confirm_checkout",
                     reason="Customer confirmed the staged checkout", outcome="applied",
@@ -336,7 +343,10 @@ class CheckoutRepository:
                 self.events.append(
                     event_type="order_paid", subject_type="order", subject_id=order["id"],
                     customer_id=order["customer_id"], amount_minor=amount_minor,
-                    origin="razorpay_test", correlation=correlation, tx=tx)
+                    # The revenue belongs to the order that earned it, so `order_paid`
+                    # carries the order's own origin; the ledger row below stays
+                    # `razorpay_test`, because that evidence did come from the provider.
+                    origin=order["origin"], correlation=correlation, tx=tx)
             self.ledger.record(
                 actor=Actor("provider", "razorpay", "shopping"),
                 action="settle_payment_attempt",
@@ -347,6 +357,39 @@ class CheckoutRepository:
                            "amount_minor": amount_minor, "currency": currency},
                 data_origin="razorpay_test", correlation=correlation, tx=tx)
         return self.read_order(order["id"])
+
+    # ----------------------------------------------------------------- expiry
+
+    def expire_unpaid(self, *, now: str | None = None,
+                      correlation: Correlation | None = None) -> dict:
+        """Release what an abandoned checkout is holding. Safe to run repeatedly.
+
+        Three sweeps, in the order that keeps them consistent: stale previews are
+        expired first (so no one confirms one mid-sweep), then every order whose
+        holds have run out is cancelled — which is what actually returns the units,
+        because `cancel` releases the reservations as part of the same transaction.
+        Free-standing expired holds are swept last, so a hold whose order was
+        already cancelled is not double-counted.
+
+        An order in `payment_verification_pending` is left alone: a verified event
+        may still be in flight for it, and expiring it could cancel an order the
+        provider is about to report as paid.
+        """
+        cutoff = now or _now()
+        stages = self.expire_due_stages(now=cutoff)
+        cancelled: list[str] = []
+        for row in self.store.rows(
+            "SELECT DISTINCT o.id AS id FROM commerce_orders o "
+            "JOIN inventory_reservations r ON r.order_id=o.id "
+            "WHERE o.status='pending_payment' AND r.status='held' AND r.expires_at<=?",
+            (cutoff,)
+        ):
+            self.cancel(row["id"], reason="Reservation expired before payment was verified",
+                        correlation=correlation)
+            cancelled.append(row["id"])
+        released = self.inventory.expire_due(now=cutoff)
+        return {"stages_expired": stages, "orders_cancelled": cancelled,
+                "reservations_expired": released}
 
     def cancel(self, order_id: str, *, reason: str, correlation: Correlation | None = None) -> dict:
         """Cancel an unpaid order and give its held stock back."""
@@ -360,6 +403,17 @@ class CheckoutRepository:
                 "SELECT id FROM inventory_reservations WHERE order_id=? AND status='held'", (order_id,)
             ):
                 self.inventory.release(reservation["id"], tx=tx)
+            # A link that can no longer be paid for is not left looking live. A late
+            # provider event for one of these still arrives, and is quarantined,
+            # because a cancelled order cannot transition to `paid`.
+            for attempt in tx.rows(
+                "SELECT id,status FROM payment_attempts WHERE order_id=? "
+                "AND status IN ('created','pending')", (order_id,)
+            ):
+                PAYMENT_ATTEMPT.check(attempt["status"], "cancelled")
+                tx.execute(
+                    "UPDATE payment_attempts SET status='cancelled', resolved_at=? WHERE id=?",
+                    (_now(), attempt["id"]))
             self.ledger.record(
                 actor=Actor("system", None, "shopping"), action="cancel_order", reason=reason,
                 outcome="applied", target_type="order", target_id=order_id,

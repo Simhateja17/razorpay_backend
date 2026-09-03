@@ -1,9 +1,12 @@
-"""Phase 1 acceptance: authority, one durable cart, and deterministic checkout intent.
+"""Phase 1 acceptance, re-proven on the Phase 5 surface.
 
-The chat assertions run against `/chat/storefront/legacy`, the regex-routed endpoint
-the storefront UI still calls while it reads the legacy flat catalogue.
-`/chat/storefront` is now the Messages API loop, and the same guarantee is proven
-against it in tests/test_runtime_transcripts.py.
+The guarantees are unchanged — one durable cart per verified principal, no client-
+supplied owner, a stale version is a conflict, an order is readable only by the
+person who placed it — but the cart they hold for is now the variant-keyed cart on
+the normalized commerce core, which the browser and the agent share. The chat
+assertions that used to run against `/chat/storefront/legacy` are gone with that
+endpoint; the same behaviour is proven against the real loop in
+tests/test_runtime_transcripts.py.
 """
 
 import pytest
@@ -17,111 +20,159 @@ from marketplace_backend.routing import Intent, classify
 from marketplace_backend.store import Store
 from marketplace_backend.storefront_backend import StorefrontBackend
 
-from test_backend import FakeMCP, sse_message
+from conftest_runtime import CUSTOMER, GOOD_CHARGER, LAPTOP, build_shopping, build_store
 
-ALICE = "11111111-1111-1111-1111-111111111111"
+ALICE = CUSTOMER
 BOB = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture
-def shop(tmp_path):
-    store = Store(tmp_path / "authority.db")
-    store.executemany("INSERT INTO products VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", [
-        ("P-EL-01", "Aster Wireless Earbuds", "Electronics", "Wireless earbuds", 2499, 34,
-         "4.4★ (812)", "EARBUDS", None, None, None, None, 1),
-        ("P-EL-02", "Aster Charger", "Electronics", "Fast charger", 999, 5,
-         None, "CHARGER", None, None, None, None, 1),
-    ])
-    return StorefrontBackend(store, AuditTrail(store), FakeMCP())
+def world(tmp_path):
+    store = build_store(tmp_path)
+    store.execute(
+        "INSERT INTO customers (id,email,display_name,origin,created_at) "
+        "VALUES (?,?,?,'live_app',datetime('now'))",
+        (BOB, "bob@example.test", "Bob"),
+    )
+    return build_shopping(store)
 
 
-def client_for(monkeypatch, shop, customer_id):
-    monkeypatch.setenv("CARTISAN_DB_PATH", shop.store.path)
+def client_for(monkeypatch, world, customer_id):
+    """A client whose requests carry a verified principal, over the test store.
+
+    Identity is a dependency, never a request field, so the override substitutes the
+    verified principal exactly where the real Supabase check would produce it.
+    """
     import api.main as api_main
 
-    class StubNarrator:
-        async def say_stream(self, system, prompt):
-            return
-            yield  # pragma: no cover - makes this an async generator
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    monkeypatch.setattr(api_main, "narrator", StubNarrator())
+    monkeypatch.setattr(api_main, "db", world.store)
+    monkeypatch.setattr(api_main, "shopping", world.service)
+    monkeypatch.setattr(api_main, "checkout_repo", world.checkout)
     api_main.app.dependency_overrides[api_main.require_customer] = lambda: Principal(
         id=customer_id, email="shopper@example.test", role="customer")
     return TestClient(api_main.app), api_main
 
 
+def cart_of(world, customer_id):
+    import asyncio
+
+    return asyncio.run(world.service.cart(customer_id))
+
+
+@pytest.fixture(autouse=True)
+def _clear_overrides():
+    yield
+    import api.main as api_main
+    api_main.app.dependency_overrides.clear()
+
+
 # ------------------------------------------------- one cart per principal
 
 
-def test_one_active_cart_per_customer_regardless_of_conversation(monkeypatch, shop):
-    """The same principal in two conversations reads and mutates one cart."""
-    client, _ = client_for(monkeypatch, shop, ALICE)
+def test_one_active_cart_per_customer_regardless_of_conversation(monkeypatch, world):
+    """The same principal writing from two places reads one cart."""
+    client, _ = client_for(monkeypatch, world, ALICE)
 
-    client.post("/chat/storefront/legacy", json={"conversation_id": "morning",
-                                          "message": "Please add the Aster Wireless Earbuds to my cart"})
-    client.post("/chat/storefront/legacy", json={"conversation_id": "evening",
-                                          "message": "Please add the Aster Charger to my cart"})
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1})
+    client.post("/cart/items", json={"variant_id": GOOD_CHARGER, "quantity": 1})
 
     cart = client.get("/cart").json()
-    assert {line["product_id"] for line in cart["lines"]} == {"P-EL-01", "P-EL-02"}
-    assert cart["cart_id"] == shop.cart_read(ALICE)["cart_id"]
+    assert {line["variant_id"] for line in cart["lines"]} == {LAPTOP, GOOD_CHARGER}
+    assert cart["cart_id"] == cart_of(world, ALICE)["cart_id"]
+    assert len(world.store.rows(
+        "SELECT id FROM customer_carts WHERE customer_id=? AND status='active'", (ALICE,))) == 1
 
 
-def test_visible_cart_and_agent_cart_read_agree(monkeypatch, shop):
-    """Acceptance 1: the REST cart the UI renders is the row the agent turn returns."""
-    client, _ = client_for(monkeypatch, shop, ALICE)
+def test_visible_cart_and_agent_cart_read_agree(monkeypatch, world):
+    """Acceptance 1, and the Phase 4 carry-over closed: the REST cart the UI renders
+    and the cart the agent's `get_cart` returns are the same row, line for line."""
+    import asyncio
 
-    response = client.post("/chat/storefront/legacy", json={
-        "conversation_id": "c1", "message": "Please add the Aster Wireless Earbuds to my cart"})
-    from_turn = sse_message(response.text)["cart"]
+    client, _ = client_for(monkeypatch, world, ALICE)
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 2})
+
     from_rest = client.get("/cart").json()
+    from_agent = asyncio.run(world.port.get_cart(world.service.session(ALICE)))
 
-    assert from_turn == from_rest == shop.cart_read(ALICE)
+    assert from_rest["cart_id"] == from_agent.cart_id
+    assert from_rest["state_version"] == from_agent.state_version
+    assert from_rest["subtotal_minor"] == from_agent.subtotal_minor
+    assert [(line["variant_id"], line["quantity"]) for line in from_rest["lines"]] == [
+        (line.variant_id, line.quantity) for line in from_agent.lines]
 
 
-def test_carts_are_isolated_between_customers(monkeypatch, shop):
-    client_a, api_main = client_for(monkeypatch, shop, ALICE)
-    client_a.post("/cart/items", json={"product_id": "P-EL-01", "quantity": 1})
+def test_carts_are_isolated_between_customers(monkeypatch, world):
+    client_a, api_main = client_for(monkeypatch, world, ALICE)
+    client_a.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1})
 
     api_main.app.dependency_overrides[api_main.require_customer] = lambda: Principal(
         id=BOB, email="bob@example.test", role="customer")
     client_b = TestClient(api_main.app)
 
     assert client_b.get("/cart").json()["lines"] == []
-    assert shop.cart_read(ALICE)["lines"][0]["product_id"] == "P-EL-01"
+    assert cart_of(world, ALICE)["lines"][0]["variant_id"] == LAPTOP
 
 
-def test_client_cannot_name_the_cart_owner(monkeypatch, shop):
+def test_client_cannot_name_the_cart_owner(monkeypatch, world):
     """A body field claiming another shopper's id is ignored, not honoured."""
-    client, _ = client_for(monkeypatch, shop, ALICE)
+    client, _ = client_for(monkeypatch, world, ALICE)
 
-    client.post("/cart/items", json={"product_id": "P-EL-01", "quantity": 1,
-                                     "session_id": BOB, "customer_id": BOB})
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                                     "customer_id": BOB, "session_id": BOB})
 
-    assert shop.cart_read(BOB)["lines"] == []
-    assert shop.cart_read(ALICE)["lines"][0]["product_id"] == "P-EL-01"
+    assert cart_of(world, BOB)["lines"] == []
+    assert cart_of(world, ALICE)["lines"][0]["variant_id"] == LAPTOP
 
 
-def test_unauthenticated_cart_access_is_rejected(monkeypatch, shop):
-    monkeypatch.setenv("CARTISAN_DB_PATH", shop.store.path)
+def test_unauthenticated_shopping_access_is_rejected(monkeypatch, world):
     import api.main as api_main
     api_main.app.dependency_overrides.clear()
-    monkeypatch.setattr(api_main, "shop", shop)
+    monkeypatch.setattr(api_main, "shopping", world.service)
 
     client = TestClient(api_main.app)
     assert client.get("/cart").status_code == 401
-    assert client.post("/cart/items", json={"product_id": "P-EL-01"}).status_code == 401
-    assert client.post("/checkout", json={}).status_code == 401
+    assert client.post("/cart/items", json={"variant_id": LAPTOP}).status_code == 401
+    assert client.post("/checkout/stage", json={}).status_code == 401
+    assert client.post("/checkout/confirm", json={"stage_id": "stage_x"}).status_code == 401
+    assert client.get("/orders").status_code == 401
 
 
-def test_orders_are_readable_only_by_their_owner(shop):
-    shop.add_to_cart(ALICE, "P-EL-01", 1)
+def test_orders_are_readable_only_by_their_owner(monkeypatch, world):
     import asyncio
-    handoff = asyncio.run(shop.checkout_handoff(ALICE, "Customer approved checkout"))
 
-    assert shop.order_status(ALICE, handoff["order_id"]) is not None
-    assert shop.order_status(BOB, handoff["order_id"]) is None
+    client, api_main = client_for(monkeypatch, world, ALICE)
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1})
+    stage = client.post("/checkout/stage", json={}).json()
+    order_id = asyncio.run(
+        world.service.confirm(ALICE, stage["stage_id"]))["order"]["order_id"]
+
+    assert client.get(f"/orders/{order_id}").status_code == 200
+
+    api_main.app.dependency_overrides[api_main.require_customer] = lambda: Principal(
+        id=BOB, email="bob@example.test", role="customer")
+    other = TestClient(api_main.app)
+    # A 404 rather than a 403: telling Bob that Alice's order id is real is itself
+    # a leak, so an order he does not own does not exist.
+    assert other.get(f"/orders/{order_id}").status_code == 404
+    assert other.post(f"/orders/{order_id}/payment").status_code == 404
+    assert other.post(f"/orders/{order_id}/redirect").status_code == 404
+
+
+def test_maintenance_endpoints_are_not_public(monkeypatch, world):
+    import api.main as api_main
+    api_main.app.dependency_overrides.clear()
+    monkeypatch.delenv("CARTISAN_OPS_TOKEN", raising=False)
+
+    client = TestClient(api_main.app)
+    assert client.post("/admin/expire").status_code == 401
+    assert client.post("/admin/payments/drain").status_code == 401
+
+    monkeypatch.setenv("CARTISAN_OPS_TOKEN", "ops-secret")
+    monkeypatch.setattr(api_main, "checkout_repo", world.checkout)
+    assert client.post("/admin/expire", headers={"X-Cartisan-Ops-Token": "ops-secret"}
+                       ).status_code == 200
+    assert client.post("/admin/expire", headers={"X-Cartisan-Ops-Token": "wrong"}
+                       ).status_code == 401
 
 
 # --------------------------------------------- deterministic checkout intent
@@ -149,90 +200,69 @@ def test_non_checkout_phrases_do_not_route_to_checkout(message):
     assert classify(message) is not Intent.CHECKOUT
 
 
-def test_checkout_intent_never_searches_or_adds(monkeypatch, shop):
-    """Acceptance 2: an explicit checkout turn performs no search and no addition."""
-    client, _ = client_for(monkeypatch, shop, ALICE)
-    shop.add_to_cart(ALICE, "P-EL-01", 1)
-    before = shop.cart_read(ALICE)
-
-    def fail_search(*args, **kwargs):  # pragma: no cover - asserted by not running
-        raise AssertionError("checkout intent must not reach product search")
-
-    def fail_add(*args, **kwargs):  # pragma: no cover - asserted by not running
-        raise AssertionError("checkout intent must not reach cart addition")
-
-    monkeypatch.setattr(shop, "search", fail_search)
-    monkeypatch.setattr(shop, "add_best_match", fail_add)
-
-    payload = sse_message(client.post("/chat/storefront/legacy", json={
-        "conversation_id": "c1", "message": "complete the purchase"}).text)
-
-    assert payload["products"] == []
-    assert payload["stagedCheckout"]["total"] == 2499
-    assert shop.cart_read(ALICE) == before  # staging mutates nothing
-
-
 # ----------------------------------------- state versions and idempotency
 
 
-def test_every_mutation_bumps_the_state_version(shop):
-    assert shop.cart_read(ALICE)["state_version"] == 0
-    assert shop.add_to_cart(ALICE, "P-EL-01", 1)["state_version"] == 1
-    assert shop.update_quantity(ALICE, "P-EL-01", 2)["state_version"] == 2
-    assert shop.remove_from_cart(ALICE, "P-EL-01")["state_version"] == 3
+def test_every_mutation_bumps_the_state_version(monkeypatch, world):
+    client, _ = client_for(monkeypatch, world, ALICE)
+
+    assert client.get("/cart").json()["state_version"] == 0
+    assert client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1}
+                       ).json()["state_version"] == 1
+    assert client.patch("/cart/items", json={"variant_id": LAPTOP, "quantity": 2}
+                        ).json()["state_version"] == 2
+    assert client.delete(f"/cart/items/{LAPTOP}").json()["state_version"] == 3
 
 
-def test_stale_expected_version_is_a_conflict(shop):
-    shop.add_to_cart(ALICE, "P-EL-01", 1)  # version is now 1
+def test_conflict_surfaces_as_409(monkeypatch, world):
+    client, _ = client_for(monkeypatch, world, ALICE)
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1})
 
-    with pytest.raises(ConflictError):
-        shop.add_to_cart(ALICE, "P-EL-02", 1, expected_version=0)
+    stale = client.post("/cart/items", json={"variant_id": GOOD_CHARGER, "quantity": 1,
+                                             "expected_version": 0})
+    assert stale.status_code == 409
 
-    assert shop.add_to_cart(ALICE, "P-EL-02", 1, expected_version=1)["state_version"] == 2
-
-
-def test_conflict_surfaces_as_409(monkeypatch, shop):
-    client, _ = client_for(monkeypatch, shop, ALICE)
-    client.post("/cart/items", json={"product_id": "P-EL-01", "quantity": 1})
-
-    response = client.post("/cart/items", json={"product_id": "P-EL-02", "quantity": 1,
-                                                "expected_version": 0})
-    assert response.status_code == 409
+    fresh = client.post("/cart/items", json={"variant_id": GOOD_CHARGER, "quantity": 1,
+                                             "expected_version": 1})
+    assert fresh.status_code == 200 and fresh.json()["state_version"] == 2
 
 
-def test_replayed_idempotency_key_applies_the_effect_once(shop):
-    first = shop.add_to_cart(ALICE, "P-EL-01", 1, idempotency_key="k1")
-    second = shop.add_to_cart(ALICE, "P-EL-01", 1, idempotency_key="k1")
+def test_replayed_idempotency_key_applies_the_effect_once(monkeypatch, world):
+    client, _ = client_for(monkeypatch, world, ALICE)
+
+    first = client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                                             "idempotency_key": "k1"}).json()
+    second = client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                                              "idempotency_key": "k1"}).json()
 
     assert first == second
-    assert shop.cart_read(ALICE)["lines"][0]["quantity"] == 1
-    assert shop.cart_read(ALICE)["state_version"] == 1
+    cart = client.get("/cart").json()
+    assert cart["lines"][0]["quantity"] == 1 and cart["state_version"] == 1
 
 
-def test_reused_key_with_a_different_request_is_a_conflict(shop):
-    shop.add_to_cart(ALICE, "P-EL-01", 1, idempotency_key="k1")
+def test_reused_key_with_a_different_request_is_a_conflict(monkeypatch, world):
+    client, _ = client_for(monkeypatch, world, ALICE)
+    client.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                                     "idempotency_key": "k1"})
 
-    with pytest.raises(ConflictError):
-        shop.add_to_cart(ALICE, "P-EL-02", 1, idempotency_key="k1")
+    reused = client.post("/cart/items", json={"variant_id": GOOD_CHARGER, "quantity": 1,
+                                              "idempotency_key": "k1"})
+    assert reused.status_code == 409
 
 
-def test_idempotency_keys_are_scoped_to_the_principal(shop):
-    shop.add_to_cart(ALICE, "P-EL-01", 1, idempotency_key="shared")
-    bob = shop.add_to_cart(BOB, "P-EL-01", 1, idempotency_key="shared")
+def test_idempotency_keys_are_scoped_to_the_principal(monkeypatch, world):
+    client_a, api_main = client_for(monkeypatch, world, ALICE)
+    client_a.post("/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                                       "idempotency_key": "shared"})
+
+    api_main.app.dependency_overrides[api_main.require_customer] = lambda: Principal(
+        id=BOB, email="bob@example.test", role="customer")
+    bob = TestClient(api_main.app).post(
+        "/cart/items", json={"variant_id": LAPTOP, "quantity": 1,
+                             "idempotency_key": "shared"}).json()
 
     assert bob["customer_id"] == BOB
-    assert bob["lines"][0]["product_id"] == "P-EL-01"
-
-
-@pytest.mark.asyncio
-async def test_replayed_checkout_creates_one_payment_link(shop):
-    shop.add_to_cart(ALICE, "P-EL-01", 1)
-
-    first = await shop.checkout_handoff(ALICE, "Customer approved checkout", idempotency_key="c1")
-    second = await shop.checkout_handoff(ALICE, "Customer approved checkout", idempotency_key="c1")
-
-    assert first["order_id"] == second["order_id"]
-    assert shop.store.rows("SELECT id FROM orders") and len(shop.store.rows("SELECT id FROM orders")) == 1
+    assert bob["lines"][0]["variant_id"] == LAPTOP
 
 
 def test_idempotency_fingerprint_is_order_independent():
@@ -270,11 +300,10 @@ def test_role_comes_from_app_metadata_not_the_client(tmp_path):
     assert operator.role == "merchant_operator"
 
 
-def test_merchant_operator_cannot_use_customer_endpoints(monkeypatch, shop):
-    monkeypatch.setenv("CARTISAN_DB_PATH", shop.store.path)
+def test_merchant_operator_cannot_use_customer_endpoints(monkeypatch, world):
     import api.main as api_main
     api_main.app.dependency_overrides.clear()
-    monkeypatch.setattr(api_main, "shop", shop)
+    monkeypatch.setattr(api_main, "shopping", world.service)
     monkeypatch.setattr(api_main.identity, "principal", lambda auth: Principal(
         id=BOB, email="ops@example.test", role="merchant_operator"))
 
@@ -282,14 +311,13 @@ def test_merchant_operator_cannot_use_customer_endpoints(monkeypatch, shop):
     assert client.get("/cart", headers={"Authorization": "Bearer t"}).status_code == 403
 
 
-@pytest.fixture(autouse=True)
-def _clear_overrides():
-    yield
-    import api.main as api_main
-    api_main.app.dependency_overrides.clear()
-
-
-def test_merchant_backend_still_builds(shop):
-    """Merchant surfaces are untouched by Phase 1 and must keep working."""
-    merchant = MerchantBackend(shop.store, AuditTrail(shop.store), shop)
+def test_merchant_backend_still_builds(tmp_path):
+    """Merchant surfaces read the legacy flat catalogue until Phase 6, and must keep
+    working while shopping runs on the normalized core."""
+    store = Store(tmp_path / "merchant.db")
+    merchant = MerchantBackend(store, AuditTrail(store), StorefrontBackend(store, AuditTrail(store)))
     assert merchant.business_snapshot("m1")["currency"] == "INR"
+
+
+def test_conflict_error_is_still_the_cart_conflict_type():
+    assert issubclass(ConflictError, Exception)

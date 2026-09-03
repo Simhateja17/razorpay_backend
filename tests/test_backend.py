@@ -1,7 +1,14 @@
-"""Pre-Phase-4 backend behaviour. These exercise `/chat/storefront/legacy`, the
-regex-routed endpoint the storefront UI still calls while it reads the legacy flat
-catalogue; `/chat/storefront` is now the Messages API loop (tests/test_runtime_*).
-Phase 5 migrates the UI and deletes the legacy path along with these tests.
+"""The legacy flat-catalogue layer that the merchant surfaces still sit on.
+
+Phase 5 moved shopping — the catalogue, the cart, checkout and orders — onto the
+normalized commerce core, and deleted `/chat/storefront/legacy` together with the
+tests that drove it. What is left here is the part `MerchantBackend` still reads:
+the flat `products` table, its search and its cross-sell bound. Phase 6 migrates
+that too, and this file retires with it.
+
+Shopping behaviour now lives in tests/test_phase5_checkout.py (the purchase and its
+failure modes), tests/test_authority.py (one cart, one owner), and
+tests/test_runtime_* (the agent turn).
 """
 
 import hashlib, hmac, json, re
@@ -36,12 +43,6 @@ def authed_client(api_main, customer_id: str) -> TestClient:
     return TestClient(api_main.app)
 
 
-class FakeMCP:
-    async def create_payment_link(self, **kwargs):
-        assert kwargs["amount"] == 249900
-        return {"id":"plink_test","short_url":"https://rzp.io/test"}
-
-
 @pytest.fixture
 def services(tmp_path):
     store=Store(tmp_path/"test.db")
@@ -56,44 +57,15 @@ def services(tmp_path):
     ]
     store.executemany("INSERT INTO products VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     audit=AuditTrail(store)
-    shop=StorefrontBackend(store,audit,FakeMCP())
+    shop=StorefrontBackend(store,audit)
     return store,audit,shop,MerchantBackend(store,audit,shop)
 
 
-def test_catalog_search_and_cart_are_bounded(services):
+def test_search_is_bounded_and_audited(services):
     _,audit,shop,_=services
     found=shop.search("s1","wireless earbuds")
     assert found[0]["id"] == "P-EL-01"
-    cart=shop.add_to_cart("s1","P-EL-01",99)
-    assert cart["lines"][0]["quantity"] == 10
-    assert len(audit.list(agent="shopping")) == 2
-
-
-def test_variant_family_cannot_be_carted(services):
-    *_,shop,_=services
-    with pytest.raises(ValueError,match="variant"):
-        shop.add_to_cart("s1","P-FA-01",1)
-    assert shop.add_to_cart("s1","P-FA-01-8",1)["total"] == 2999
-
-
-def test_cross_sell_is_explicit_bounded_and_single_candidate(services):
-    _,audit,shop,_=services
-    shop.add_to_cart("upsell","P-HK-01",1)
-    suggestion=shop.cross_sell("upsell","P-HK-01","Explicit filter pairing",excluded_ids={"P-HK-01"})
-    assert suggestion["id"] == "P-HK-02"
-    assert suggestion["cross_sell_of"] == "P-HK-01"
-    assert suggestion["price"] <= shop.cart_read("upsell")["total"] * .35
-    assert shop.cross_sell("upsell","P-HK-01","Duplicate excluded",excluded_ids={"P-HK-02"}) is None
-    assert len([x for x in audit.list() if x["action"] == "propose_upsell"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_checkout_url_comes_from_mcp_after_cart(services):
-    _,_,shop,_=services
-    shop.add_to_cart("s1","P-EL-01",1)
-    handoff=await shop.checkout_handoff("s1","Customer approved checkout")
-    assert handoff["pay_url"] == "https://rzp.io/test"
-    assert handoff["payment_link_id"] == "plink_test"
+    assert len(audit.list(agent="shopping")) == 1
 
 
 def test_merchant_write_requires_explicit_approval(services):
@@ -127,196 +99,10 @@ def test_webhook_rejects_bad_signature(monkeypatch,tmp_path):
     assert client.post("/webhook/razorpay",content=b"{}",headers={"X-Razorpay-Signature":"bad"}).status_code == 401
 
 
-def test_storefront_chat_adds_requested_product(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    class StubNarrator:
-        async def say_stream(self, system, prompt):
-            return
-            yield  # pragma: no cover - makes this an async generator
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    monkeypatch.setattr(api_main, "narrator", StubNarrator())
-    client = authed_client(api_main, "chat-add")
-
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Please add the Aster Wireless Earbuds to my cart",
-    })
-
-    assert response.status_code == 200
-    cart = shop.cart_read("chat-add")
-    assert cart["lines"][0]["product_id"] == "P-EL-01"
-
-
-def test_storefront_chat_keeps_narration_in_inr(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    class StubNarrator:
-        async def say_stream(self, system, prompt):
-            for chunk in ("Aster Wireless Earbuds ", "cost $2,499."):
-                yield chunk
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    monkeypatch.setattr(api_main, "narrator", StubNarrator())
-    client = authed_client(api_main, "currency-check")
-
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Show me wireless earbuds",
-    })
-    payload = sse_message(response.text)
-
-    assert "₹2,499" in payload["text"]
-    assert "$2,499" not in payload["text"]
-
-
-def test_storefront_chat_adds_from_previous_search(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    class StubNarrator:
-        async def say_stream(self, system, prompt):
-            return
-            yield  # pragma: no cover - makes this an async generator
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    monkeypatch.setattr(api_main, "narrator", StubNarrator())
-    client = authed_client(api_main, "follow-up-add")
-
-    first = client.post("/chat/storefront/legacy", json={
-        "message": "Show me wireless earbuds",
-    })
-    assert first.status_code == 200
-
-    second = client.post("/chat/storefront/legacy", json={
-        "message": "Can you add one of them into cart",
-    })
-    assert second.status_code == 200
-    assert shop.cart_read("follow-up-add")["lines"][0]["product_id"] == "P-EL-01"
-
-
-def test_storefront_chat_checkout_phrase_stages_without_adding(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    shop.add_to_cart("checkout-chat", "P-EL-01", 1)
-    client = authed_client(api_main, "checkout-chat")
-
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Alright leta complete the purchase ?",
-    })
-
-    assert response.status_code == 200
-    payload = sse_message(response.text)
-    assert payload["stagedCheckout"]["total"] == 2499
-    assert payload["products"] == []
-    assert shop.cart_read("checkout-chat")["lines"][0]["product_id"] == "P-EL-01"
-    assert shop.is_checkout_request("Alright leta complete the purchase ?")
-    assert not shop.is_add_request("Alright leta complete the purchase ?")
-    assert not shop.is_checkout_request("What are the checkout options?")
-
-
-def test_storefront_chat_acknowledged_checkout_uses_authoritative_cart(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    shop.add_to_cart("ack-checkout-chat", "P-EL-01", 1)
-    client = authed_client(api_main, "ack-checkout-chat")
-
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Okay checkout",
-    })
-
-    assert response.status_code == 200
-    payload = sse_message(response.text)
-    assert payload["stagedCheckout"]["total"] == 2499
-    assert payload["products"] == []
-    assert payload["cart"]["lines"][0]["product_id"] == "P-EL-01"
-    assert shop.is_checkout_request("Okay checkout")
-    assert not shop.is_checkout_request("Okay, what are the checkout options?")
-
-
-def test_empty_cart_checkout_request_does_not_add_from_search(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    client = authed_client(api_main, "empty-checkout-chat")
-
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Please take me to checkout",
-    })
-
-    assert response.status_code == 200
-    payload = sse_message(response.text)
-    assert payload["stagedCheckout"] is None
-    assert "Cart is empty" in payload["text"]
-    assert shop.cart_read("empty-checkout-chat")["lines"] == []
-
-
-def test_storefront_chat_does_not_add_stale_result_for_unknown_item(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    class StubNarrator:
-        async def say_stream(self, system, prompt):
-            return
-            yield  # pragma: no cover - makes this an async generator
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    monkeypatch.setattr(api_main, "narrator", StubNarrator())
-    client = authed_client(api_main, "stale-add")
-
-    client.post("/chat/storefront/legacy", json={
-        "message": "Show me wireless earbuds",
-    })
-    response = client.post("/chat/storefront/legacy", json={
-        "message": "Please add Nimbus Dead Stock to my cart",
-    })
-
-    assert response.status_code == 200
-    assert shop.cart_read("stale-add")["lines"] == []
-
-
-@pytest.mark.asyncio
-async def test_checkout_clears_persisted_cart(services):
-    _, _, shop, _ = services
-    shop.add_to_cart("checkout-clear", "P-EL-01", 1)
-
-    await shop.checkout_handoff("checkout-clear", "Customer approved checkout")
-
-    assert shop.cart_read("checkout-clear")["lines"] == []
-
-
 def test_search_excludes_out_of_stock_products(services):
     _, _, shop, _ = services
 
     assert shop.search("search-oos", "Nimbus Dead Stock") == []
-
-
-def test_checkout_bound_returns_bad_request(monkeypatch, services):
-    store, _, shop, _ = services
-    monkeypatch.setenv("CARTISAN_DB_PATH", store.path)
-    import api.main as api_main
-
-    monkeypatch.setattr(api_main, "shop", shop)
-    shop.add_to_cart("over-bound", "P-EL-01", 10)
-    client = authed_client(api_main, "over-bound")
-
-    response = client.post("/checkout", json={"reasoning": "Customer requested checkout"})
-
-    assert response.status_code == 400
-    assert "₹10,000" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

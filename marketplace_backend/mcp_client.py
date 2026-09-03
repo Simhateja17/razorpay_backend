@@ -60,6 +60,35 @@ class RazorpayMCPClient:
         return json.loads(text)
 
     async def create_payment_link(self, *, amount: int, reference_id: str, description: str) -> dict:
-        return await self.call_tool("create_payment_link", {"amount": amount, "currency":"INR",
-          "reference_id": reference_id[:40], "description": description,
-          "notes":{"source":"cartisan"}})
+        """The link for this internal order, creating it only if it does not exist.
+
+        `reference_id` is the internal order id, and Razorpay enforces that it is
+        unique — but by *rejecting* the second create, not by returning the first
+        link. So a redelivered outbox message (a timeout, a crash between the
+        provider call and our write) would otherwise fail forever and dead-letter,
+        leaving an order with a live link at the provider and none recorded here.
+        Reading the existing link back is what makes the handoff genuinely
+        idempotent, which is what ADR 0011 asks the interface to guarantee.
+        """
+        reference_id = reference_id[:40]
+        try:
+            return await self.call_tool("create_payment_link", {"amount": amount, "currency":"INR",
+              "reference_id": reference_id, "description": description,
+              "notes":{"source":"cartisan"}})
+        except RazorpayMCPError as exc:
+            if "already exists" not in str(exc):
+                raise
+            existing = await self.find_payment_link(reference_id)
+            if existing is None:
+                raise
+            return existing
+
+    async def find_payment_link(self, reference_id: str) -> dict | None:
+        """The link already created for this reference, or None."""
+        response = await self.call_tool("fetch_all_payment_links",
+                                        {"reference_id": reference_id})
+        links = response.get("payment_links") or response.get("items") or []
+        for link in links:
+            if link.get("reference_id") == reference_id:
+                return link
+        return links[0] if len(links) == 1 else None

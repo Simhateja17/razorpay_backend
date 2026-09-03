@@ -8,9 +8,16 @@ smallest shape that can tell a compatibility verdict from a plausible guess.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+from types import SimpleNamespace
+
 from marketplace_backend.checkout import CheckoutRepository
-from marketplace_backend.evidence import CommerceEventLog, EvidenceLedger, Outbox
+from marketplace_backend.evidence import CommerceEventLog, EvidenceLedger, Inbox, Outbox
 from marketplace_backend.inventory import InventoryRepository
+from marketplace_backend.payments import PaymentLinkDispatcher, WebhookProcessor
+from marketplace_backend.shopping import ShoppingService
 from marketplace_backend.store import Store
 
 from cartisan_agent import CoreCommercePort, PresentationLedger, TurnStore
@@ -69,6 +76,14 @@ def build_store(tmp_path) -> Store:
             "VALUES (?,'loc-blr',?,0)",
             (variant_id, on_hand),
         )
+        # Every unit on hand is explained by a movement, exactly as production
+        # requires, so `InventoryRepository.reconcile` is meaningful in these tests
+        # rather than failing on the fixture's own unexplained stock.
+        store.execute(
+            "INSERT INTO inventory_movements (id,variant_id,location_id,delta,reason,"
+            "created_at) VALUES (?,?,'loc-blr',?,'receipt',datetime('now'))",
+            (f"mv_seed_{variant_id}", variant_id, on_hand),
+        )
 
     product("sd_prod_laptop", "LAP-1", "Aster 14 laptop", "Aster", "cat-computing")
     variant(LAPTOP, "sd_prod_laptop", "LAP-1-512", "Aster 14 laptop, 512 GB", 8_499_00, 5)
@@ -102,6 +117,69 @@ def build_services(store: Store, config: CartisanAgentConfig | None = None) -> C
         port=CoreCommercePort(store, checkout=checkout, config=config),
         presentations=PresentationLedger(store, config),
     )
+
+
+class FakeGateway:
+    """A Razorpay stand-in that behaves like the real one where it matters: the same
+    `reference_id` always returns the same link, because the provider treats the
+    internal order id as an idempotency key (ADR 0011)."""
+
+    def __init__(self, fail_times: int = 0) -> None:
+        self.calls: list[dict] = []
+        self.fail_times = fail_times
+        self._links: dict[str, dict] = {}
+
+    async def create_payment_link(self, *, amount: int, reference_id: str, description: str) -> dict:
+        self.calls.append({"amount": amount, "reference_id": reference_id})
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("provider unavailable")
+        if reference_id not in self._links:
+            index = len(self._links) + 1
+            self._links[reference_id] = {
+                "id": f"plink_test_{index}",
+                "short_url": f"https://rzp.io/test/{index}",
+                "amount": amount,
+                "currency": "INR",
+            }
+        return self._links[reference_id]
+
+
+def build_shopping(store: Store, gateway: FakeGateway | None = None,
+                   config: CartisanAgentConfig | None = None):
+    """The whole Phase 5 host surface over one store, wired as `api.main` wires it."""
+    config = config or CartisanAgentConfig()
+    ledger = EvidenceLedger(store)
+    outbox, inbox = Outbox(store), Inbox(store)
+    checkout = CheckoutRepository(
+        store, InventoryRepository(store), ledger, outbox, CommerceEventLog(store)
+    )
+    port = CoreCommercePort(store, checkout=checkout, config=config)
+    gateway = gateway or FakeGateway()
+    dispatcher = PaymentLinkDispatcher(store, checkout, outbox, gateway, ledger)
+    return SimpleNamespace(
+        store=store, port=port, checkout=checkout, inventory=checkout.inventory,
+        ledger=ledger, outbox=outbox, inbox=inbox, gateway=gateway, dispatcher=dispatcher,
+        service=ShoppingService(store, port, checkout, dispatcher),
+        webhooks=WebhookProcessor(store, checkout, inbox, ledger),
+    )
+
+
+def signed_event(event: dict, secret: str) -> tuple[bytes, str]:
+    """The exact bytes a signed delivery carries, and their signature."""
+    raw = json.dumps(event).encode()
+    return raw, hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+
+
+def paid_event(provider_reference: str, amount_minor: int, *, currency: str = "INR",
+               event_id: str = "evt_1", event: str = "payment_link.paid") -> dict:
+    return {
+        "id": event_id,
+        "event": event,
+        "payload": {"payment_link": {"entity": {
+            "id": provider_reference, "amount": amount_minor, "currency": currency,
+            "status": "paid" if event == "payment_link.paid" else "failed"}}},
+    }
 
 
 def session(conversation_id: str = "conv-1") -> SessionContext:

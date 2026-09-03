@@ -361,6 +361,18 @@ class CoreCommercePort(CommercePort):
             )
         return options
 
+    # -- catalogue reads the host shares with the agent -------------------------
+    # The REST catalogue and the agent's tool results must quote the same price and
+    # the same stock, so both go through these rather than through a second query.
+
+    def sellable(self, variant_id: str) -> int:
+        """Units that can be sold right now: on hand, less what is already held."""
+        return self._sellable(variant_id)
+
+    def current_price(self, variant_id: str) -> int:
+        """The price in effect now, promotional first, in paise."""
+        return self._price(variant_id)
+
     # -- internals ------------------------------------------------------------
 
     def _variant(self, row: dict) -> Variant:

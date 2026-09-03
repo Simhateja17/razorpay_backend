@@ -23,6 +23,11 @@ from ..inventory import InsufficientStock, InventoryRepository
 from ..store import Store
 from .generator import SEED_PREFIX, GeneratedWorld
 
+# Scenario orders are demo evidence built by the generator through the production
+# repositories, not orders a person placed in the app. `razorpay_test` is what keeps
+# them out of both the seeded ninety-day history and the live-app metrics (ADR 0032).
+SCENARIO_ORIGIN = "razorpay_test"
+
 
 @dataclass(frozen=True)
 class ScenarioPack:
@@ -79,7 +84,8 @@ def _golden_purchase(ctx: ScenarioContext) -> dict:
     variant = ctx.variant_with_stock(2)
     stage = ctx.stage(customer, variant, 1, key="golden", correlation=correlation)
     order = ctx.checkout.confirm(stage_id=stage["id"], customer_id=customer,
-                                 current_cart_state_version=1, correlation=correlation)
+                                 current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
     attempt = ctx.checkout.open_attempt(order_id=order["id"], customer_id=customer,
                                         correlation=correlation)
     ctx.checkout.attach_provider_link(
@@ -105,7 +111,8 @@ def _declined_then_retry(ctx: ScenarioContext) -> dict:
     variant = ctx.variant_with_stock(2, skip=1)
     stage = ctx.stage(customer, variant, 1, key="retry", correlation=correlation)
     order = ctx.checkout.confirm(stage_id=stage["id"], customer_id=customer,
-                                 current_cart_state_version=1, correlation=correlation)
+                                 current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
 
     first = ctx.checkout.open_attempt(order_id=order["id"], customer_id=customer,
                                       correlation=correlation)
@@ -137,7 +144,8 @@ def _expired_stage(ctx: ScenarioContext) -> dict:
     stage = ctx.stage(customer, variant, 1, key="expired", minutes=-1, correlation=correlation)
     try:
         ctx.checkout.confirm(stage_id=stage["id"], customer_id=customer,
-                             current_cart_state_version=1, correlation=correlation)
+                             current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
         refused = False
     except StageExpired:
         refused = True
@@ -154,7 +162,8 @@ def _abandoned_then_released(ctx: ScenarioContext) -> dict:
     before = ctx.inventory.sellable(variant)
     stage = ctx.stage(customer, variant, 1, key="abandoned", correlation=correlation)
     order = ctx.checkout.confirm(stage_id=stage["id"], customer_id=customer,
-                                 current_cart_state_version=1, correlation=correlation)
+                                 current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
     held = ctx.inventory.sellable(variant)
     ctx.checkout.cancel(order["id"], reason="Customer abandoned the payment",
                         correlation=correlation)
@@ -191,10 +200,12 @@ def _last_unit_contention(ctx: ScenarioContext) -> dict:
     first = ctx.stage(first_customer, variant, 1, key="scarce_a", correlation=correlation)
     second = ctx.stage(second_customer, variant, 1, key="scarce_b", correlation=correlation)
     winner = ctx.checkout.confirm(stage_id=first["id"], customer_id=first_customer,
-                                  current_cart_state_version=1, correlation=correlation)
+                                  current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
     try:
         ctx.checkout.confirm(stage_id=second["id"], customer_id=second_customer,
-                             current_cart_state_version=1, correlation=correlation)
+                             current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
         refused = False
     except InsufficientStock:
         refused = True
@@ -210,7 +221,8 @@ def _provider_mismatch_quarantined(ctx: ScenarioContext) -> dict:
     variant = ctx.variant_with_stock(2, skip=4)
     stage = ctx.stage(customer, variant, 1, key="mismatch", correlation=correlation)
     order = ctx.checkout.confirm(stage_id=stage["id"], customer_id=customer,
-                                 current_cart_state_version=1, correlation=correlation)
+                                 current_cart_state_version=1, origin=SCENARIO_ORIGIN,
+                             correlation=correlation)
     attempt = ctx.checkout.open_attempt(order_id=order["id"], customer_id=customer,
                                         correlation=correlation)
     ctx.checkout.attach_provider_link(attempt["id"], provider_reference="plink_mismatch",

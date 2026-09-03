@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -95,7 +96,14 @@ class CartisanShoppingRuntime:
             if skills_dir and skills_dir.exists()
             else SkillRegistry([])
         )
-        self.client = client or AsyncAnthropic(timeout=self.config.request_timeout_s)
+        # An identity-linked API key must name the workspace it acts in, or every
+        # request is rejected with a 400 before the turn starts. `AgentNarrator` has
+        # always sent this header; the runtime has to send it too.
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID")
+        self.client = client or AsyncAnthropic(
+            timeout=self.config.request_timeout_s,
+            default_headers={"anthropic-workspace-id": workspace_id} if workspace_id else None,
+        )
         self.memory = memory or build_memory(self.config)
         self.turns = turns or TurnStore(store)
 

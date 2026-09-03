@@ -1,16 +1,36 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 
+_TABLE_NAMES = ("carts", "orders", "approvals", "audit")
+
+
 class Store:
-    def __init__(self, path: str | Path | None = None) -> None:
-        self.path = str(path or Path(__file__).with_name("cartisan.db"))
+    """Small persistence boundary with SQLite for tests and Supabase Postgres in runtime."""
+
+    def __init__(self, path: str | Path | None = None, database_url: str | None = None) -> None:
         self._lock = RLock()
+        self._pool = None
+        self._db = None
+
+        # An explicit path always selects SQLite. This keeps tests isolated even if
+        # the developer shell has SUPABASE_DATABASE_URL configured.
+        if database_url and path is None:
+            self.backend = "supabase"
+            self.path = None
+            self._connect_postgres(database_url)
+        else:
+            self.backend = "sqlite"
+            self.path = str(path or Path(__file__).with_name("cartisan.db"))
+            self._connect_sqlite()
+
+    def _connect_sqlite(self) -> None:
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript("""
@@ -27,15 +47,54 @@ class Store:
         """)
         self._db.commit()
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+    def _connect_postgres(self, database_url: str) -> None:
+        try:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:
+            raise RuntimeError(
+                "Supabase is configured but the Postgres driver is missing. "
+                "Run: pip install -r requirements.txt"
+            ) from exc
+
+        self._pool = ConnectionPool(
+            conninfo=database_url,
+            min_size=1,
+            max_size=5,
+            timeout=10,
+            kwargs={"autocommit": True, "row_factory": dict_row},
+            open=True,
+        )
+        self._pool.wait(timeout=10)
+        self.rows("SELECT 1 AS ready")
+
+    def _postgres_sql(self, sql: str) -> str:
+        rewritten = sql.replace("?", "%s").replace("MIN(%s,carts.quantity+%s)", "LEAST(%s,carts.quantity+%s)")
+        for table in _TABLE_NAMES:
+            rewritten = re.sub(rf"\b{table}\b", f"cartisan.{table}", rewritten)
+        return rewritten
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        if self.backend == "supabase":
+            with self._pool.connection() as connection:
+                return connection.execute(self._postgres_sql(sql), params)
         with self._lock:
-            cur = self._db.execute(sql, params)
+            cursor = self._db.execute(sql, params)
             self._db.commit()
-            return cur
+            return cursor
 
     def rows(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+        if self.backend == "supabase":
+            with self._pool.connection() as connection:
+                return list(connection.execute(self._postgres_sql(sql), params).fetchall())
         with self._lock:
-            return [dict(r) for r in self._db.execute(sql, params).fetchall()]
+            return [dict(row) for row in self._db.execute(sql, params).fetchall()]
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.close()
+        if self._db is not None:
+            self._db.close()
 
     @staticmethod
     def dump(value: Any) -> str:

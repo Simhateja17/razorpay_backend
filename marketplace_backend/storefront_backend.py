@@ -64,7 +64,7 @@ class StorefrontBackend:
         if not p or p.get("options"): raise ValueError("Choose a purchasable product variant")
         quantity = max(1, min(quantity, MAX_QUANTITY))
         if p["stock"] < quantity: raise ValueError("Requested quantity is unavailable")
-        self.store.execute("INSERT INTO carts VALUES (?,?,?) ON CONFLICT(session_id,product_id) DO UPDATE SET quantity=MIN(?,quantity+?)",
+        self.store.execute("INSERT INTO carts VALUES (?,?,?) ON CONFLICT(session_id,product_id) DO UPDATE SET quantity=MIN(?,carts.quantity+?)",
                            (session_id, product_id, quantity, MAX_QUANTITY, quantity))
         cart = self.cart_read(session_id)
         self.audit.append(session_id=session_id, agent="shopping", action="add_to_cart", reasoning=reasoning,

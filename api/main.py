@@ -18,7 +18,10 @@ from marketplace_backend.merchant_backend import MerchantBackend
 from marketplace_backend.store import Store
 from marketplace_backend.storefront_backend import StorefrontBackend
 
-db = Store(os.getenv("CARTISAN_DB_PATH"))
+db = Store(
+    path=os.getenv("CARTISAN_DB_PATH"),
+    database_url=os.getenv("SUPABASE_DATABASE_URL"),
+)
 audit = AuditTrail(db)
 shop = StorefrontBackend(db, audit)
 merchant = MerchantBackend(db, audit, shop)
@@ -63,6 +66,11 @@ async def one_event(event: str, data: dict) -> AsyncIterator[str]:
 
 @app.get("/health")
 def health(): return {"status":"ok"}
+
+@app.get("/health/database")
+def database_health():
+    db.rows("SELECT 1 AS ready")
+    return {"status":"ok", "database":db.backend}
 
 @app.post("/chat/storefront")
 async def storefront_chat(body: ChatRequest):

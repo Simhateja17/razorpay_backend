@@ -1,0 +1,28 @@
+{
+  "store_name": "Cartisan",
+  "currency": "INR",
+  "products": [
+    {"id":"P-EL-01","name":"Aster Wireless Earbuds","category":"Electronics","description":"28-hour battery wireless earbuds","price":2499,"stock":34,"rating":"4.4★ (812)","image_label":"EARBUDS"},
+    {"id":"P-EL-02","name":"Nimbus 20W Fast Charger","category":"Electronics","description":"USB-C PD 3.0 wall charger","price":899,"stock":58,"rating":"4.6★ (1.2k)","image_label":"CHARGER","cross_sell_of":"P-EL-03"},
+    {"id":"P-EL-03","name":"Halcyon Phone Case","category":"Electronics","description":"Clear drop-proof phone case","price":599,"stock":42,"rating":"4.2★ (430)","image_label":"CASE"},
+    {"id":"P-EL-04","name":"Orbit Power Bank 10000mAh","category":"Electronics","description":"Slim two-port power bank","price":1299,"stock":26,"rating":"4.3★ (601)","image_label":"POWERBANK"},
+    {"id":"P-EL-05","name":"Arc USB-C Cable","category":"Electronics","description":"Braided 1.5 metre fast-charge cable","price":399,"stock":75,"rating":"4.5★ (342)","image_label":"CABLE","cross_sell_of":"P-EL-04"},
+    {"id":"P-HK-01","name":"Solace Drip Coffee Maker","category":"Home & Kitchen","description":"Four-cup drip coffee maker","price":3199,"stock":18,"rating":"4.5★ (295)","image_label":"COFFEE"},
+    {"id":"P-HK-02","name":"Solace Paper Filters (100pk)","category":"Home & Kitchen","description":"Paper filters for Solace four-cup maker","price":249,"stock":12,"rating":"4.7★ (188)","image_label":"FILTERS","cross_sell_of":"P-HK-01"},
+    {"id":"P-HK-03","name":"Ferro Cast-Iron Pan","category":"Home & Kitchen","description":"10-inch pre-seasoned cast-iron pan","price":1799,"stock":21,"rating":"4.6★ (512)","image_label":"PAN"},
+    {"id":"P-HK-04","name":"Ferro Pan Care Kit","category":"Home & Kitchen","description":"Seasoning oil and pan scraper","price":349,"stock":39,"rating":"4.1★ (76)","image_label":"CAREKIT","cross_sell_of":"P-HK-03"},
+    {"id":"P-HK-05","name":"Morrow Glass Storage Set","category":"Home & Kitchen","description":"Six leak-proof glass containers","price":1499,"stock":15,"rating":"4.4★ (221)","image_label":"STORAGE"},
+    {"id":"P-FA-01","name":"Meridian Running Shoes","category":"Fashion","description":"Men's breathable mesh running shoes","price":2999,"stock":0,"rating":"4.4★ (940)","image_label":"SHOES","options":{"size":["UK 8","UK 9","UK 10"]}},
+    {"id":"P-FA-01-8","name":"Meridian Running Shoes — UK 8","category":"Fashion","description":"Breathable mesh running shoes","price":2999,"stock":8,"variant_of":"P-FA-01","option_values":{"size":"UK 8"},"image_label":"SHOES"},
+    {"id":"P-FA-01-9","name":"Meridian Running Shoes — UK 9","category":"Fashion","description":"Breathable mesh running shoes","price":2999,"stock":0,"variant_of":"P-FA-01","option_values":{"size":"UK 9"},"image_label":"SHOES"},
+    {"id":"P-FA-01-10","name":"Meridian Running Shoes — UK 10","category":"Fashion","description":"Breathable mesh running shoes","price":2999,"stock":11,"variant_of":"P-FA-01","option_values":{"size":"UK 10"},"image_label":"SHOES"},
+    {"id":"P-FA-02","name":"Meridian Cushion Socks (3pk)","category":"Fashion","description":"Cushioned running socks","price":449,"stock":47,"rating":"4.5★ (321)","image_label":"SOCKS","cross_sell_of":"P-FA-01"},
+    {"id":"P-FA-03","name":"Aldervale Cotton Tee","category":"Fashion","description":"Unisex 220 GSM cotton T-shirt","price":799,"stock":31,"rating":"4.3★ (654)","image_label":"TEE"},
+    {"id":"P-FA-04","name":"Aldervale Denim Jacket","category":"Fashion","description":"Unisex mid-wash denim jacket","price":2699,"stock":13,"rating":"4.2★ (198)","image_label":"JACKET"},
+    {"id":"P-BS-01","name":"The Quiet Ledger — Novel","category":"Books & Stationery","description":"Paperback literary mystery","price":399,"stock":29,"rating":"4.6★ (233)","image_label":"BOOK"},
+    {"id":"P-BS-02","name":"Lumen Clip-On Reading Light","category":"Books & Stationery","description":"USB rechargeable reading light","price":549,"stock":24,"rating":"4.4★ (167)","image_label":"LIGHT","cross_sell_of":"P-BS-01"},
+    {"id":"P-BS-03","name":"Fieldnote Dot-Grid Journal","category":"Books & Stationery","description":"A5 journal with 160 pages","price":349,"stock":52,"rating":"4.7★ (410)","image_label":"JOURNAL"},
+    {"id":"P-BS-04","name":"Graphite Pencil Set (12pc)","category":"Books & Stationery","description":"Drawing pencils from 2H to 6B","price":299,"stock":63,"rating":"4.5★ (289)","image_label":"PENCILS","cross_sell_of":"P-BS-03"},
+    {"id":"P-BS-05","name":"Canvas Pencil Pouch","category":"Books & Stationery","description":"Washable zip pencil pouch","price":199,"stock":44,"rating":"4.3★ (118)","image_label":"POUCH"}
+  ]
+}

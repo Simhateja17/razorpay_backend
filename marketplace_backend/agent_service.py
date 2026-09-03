@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import json
-from typing import Any
+from typing import Any, AsyncIterator
 from anthropic import AsyncAnthropic
 
 logger = logging.getLogger(__name__)
@@ -18,15 +18,22 @@ class AgentNarrator:
         self.model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
         self.effort = os.getenv("ANTHROPIC_EFFORT", "low")
 
-    async def say(self, system: str, prompt: str, fallback: str) -> str:
+    async def say_stream(self, system: str, prompt: str) -> AsyncIterator[str]:
+        """Yield narration text as it is generated. Yields nothing on failure —
+        the caller falls back to grounded wording when no chunk arrived."""
         try:
-            message = await self.client.messages.create(model=self.model,max_tokens=180,
-                                                        output_config={"effort": self.effort},
-                                                        system=system,messages=[{"role":"user","content":prompt}])
-            return "".join(block.text for block in message.content if block.type == "text").strip() or fallback
+            async with self.client.messages.stream(model=self.model,max_tokens=180,
+                                                    output_config={"effort": self.effort},
+                                                    system=system,messages=[{"role":"user","content":prompt}]) as stream:
+                async for chunk in stream.text_stream:
+                    yield chunk
         except Exception:
-            logger.exception("Claude narration failed; using grounded fallback")
-            return fallback
+            logger.exception("Claude streaming narration failed; using grounded fallback")
+            return
+
+    async def say(self, system: str, prompt: str, fallback: str) -> str:
+        text = "".join([chunk async for chunk in self.say_stream(system, prompt)]).strip()
+        return text or fallback
 
     async def merchant_turn(self, prompt: str, fallback: str) -> dict[str, Any]:
         """Return merchant wording plus at most one proposed write; never apply it here."""
@@ -38,10 +45,20 @@ class AgentNarrator:
                     "anyOf": [
                         {"type": "null"},
                         {"type": "object", "additionalProperties": False,
-                         "properties": {
+                        "properties": {
                              "kind": {"type": "string", "enum": ["price_update", "restock", "pause_product", "activate_product", "promotion", "content_edit"]},
                              "target_id": {"type": ["string", "null"]},
-                             "after": {"type": "object"},
+                             "after": {
+                                 "type": "object",
+                                 "additionalProperties": False,
+                                 "properties": {
+                                     "price": {"type": "integer"},
+                                     "quantity": {"type": "integer"},
+                                     "discount_percent": {"type": "integer"},
+                                     "exposure_cap": {"type": "integer"},
+                                     "description": {"type": "string"},
+                                 },
+                             },
                              "reasoning": {"type": "string"},
                          }, "required": ["kind", "target_id", "after", "reasoning"]},
                     ]

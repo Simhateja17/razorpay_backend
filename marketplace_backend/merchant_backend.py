@@ -15,17 +15,19 @@ class MerchantBackend:
         self.store, self.audit, self.storefront = store, audit, storefront
 
     def business_snapshot(self, session_id: str) -> dict:
-        value = {"period":"last_30_days","currency":"INR","sales":184250,"orders":73,
-                 "traffic":None,"conversion_rate":None,"average_order_value":2524.66,
+        rows = self.store.rows("SELECT amount FROM orders WHERE status='paid'")
+        sales = sum(int(row["amount"]) for row in rows)
+        order_count = len(rows)
+        value = {"period":"all_time","currency":"INR","sales":sales,"orders":order_count,
+                 "traffic":None,"conversion_rate":None,"average_order_value":round(sales/order_count,2) if order_count else 0,
                  "limitations":[{"source":"traffic_analytics","note":"Traffic and conversion are not connected."}]}
         self.audit.append(session_id=session_id,agent="merchant",action="business_snapshot",
                           reasoning="Merchant requested a performance overview",result=value)
         return value
 
     def metric_series(self, session_id: str, metric: str) -> dict:
-        supported = {"sales":[24100,27800,25300,26900,28150,26300,25700], "orders":[9,11,10,10,12,10,11]}
-        value = {"metric":metric,"period":"last_7_days","points":supported.get(metric,[]),
-                 "note":None if metric in supported else "This metric source is not connected."}
+        value = {"metric":metric,"period":"last_7_days","points":[],
+                 "note":"Daily analytics are not connected."}
         self.audit.append(session_id=session_id,agent="merchant",action="metric_series",
                           reasoning=f"Merchant requested {metric} trend",result=value)
         return value
@@ -33,14 +35,13 @@ class MerchantBackend:
     def pricing_context(self, session_id: str, product_id: str) -> dict | None:
         p = self.storefront.products.get(product_id)
         value = None if not p else {"product_id":product_id,"price":p["price"],"currency":"INR",
-          "floor":round(p["price"]*.72),"min_price_basis":"synthetic 28% gross-margin floor"}
+          "floor":None,"min_price_basis":"Cost and margin data are not connected."}
         self.audit.append(session_id=session_id,agent="merchant",action="pricing_context",
                           reasoning="Merchant requested pricing context",result=value)
         return value
 
     def campaign_performance(self, session_id: str) -> list[dict]:
-        value = [{"id":"CMP-01","name":"Weekend Fashion","status":"draft","spend":None,"revenue":None,
-                  "note":"Draft campaign has no performance yet."}]
+        value = []
         self.audit.append(session_id=session_id,agent="merchant",action="campaign_performance",
                           reasoning="Merchant requested campaign performance",result=value)
         return value
@@ -124,9 +125,19 @@ class MerchantBackend:
 
     def _apply(self, change: dict) -> None:
         p = self.storefront.products.get(change["target_id"] or "")
-        if change["kind"] == "price_update" and p: p["price"] = int(change["after"]["price"])
-        elif change["kind"] == "restock" and p: p["stock"] += int(change["after"]["quantity"])
-        elif change["kind"] == "pause_product" and p: p["stock"] = 0
-        elif change["kind"] == "activate_product" and p: p["stock"] = max(1,p["stock"])
-        elif change["kind"] == "content_edit" and p: p.update(change["after"])
-        # Promotion/refund records remain explicit fixtures until their external executor is connected.
+        if change["kind"] == "price_update" and p:
+            p["price"] = int(change["after"]["price"])
+            self.store.execute("UPDATE products SET price=? WHERE id=?", (p["price"], p["id"]))
+        elif change["kind"] == "restock" and p:
+            p["stock"] += int(change["after"]["quantity"])
+            self.store.execute("UPDATE products SET stock=? WHERE id=?", (p["stock"], p["id"]))
+        elif change["kind"] == "pause_product" and p:
+            p["active"] = False
+            self.store.execute("UPDATE products SET active=0 WHERE id=?", (p["id"],))
+        elif change["kind"] == "activate_product" and p:
+            p["active"] = True
+            self.store.execute("UPDATE products SET active=1 WHERE id=?", (p["id"],))
+        elif change["kind"] == "content_edit" and p:
+            p.update(change["after"])
+            self.store.execute("UPDATE products SET description=? WHERE id=?", (p["description"], p["id"]))
+        # Promotion/refund executors are not connected, so they remain approval-only.

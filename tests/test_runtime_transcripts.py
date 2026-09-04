@@ -115,6 +115,22 @@ async def test_a_browse_turn_searches_then_presents(core):
     assert cards[0]["item_ref"].startswith("item_")
 
 
+async def test_a_broad_catalogue_question_forces_search_first(core):
+    """The retailer description is not evidence that a category is stocked."""
+    store, services = core
+    client = FakeClient(
+        [
+            tool_calls_message(("search_products", {"query": ""})),
+            text_message("The catalogue lookup completed."),
+        ]
+    )
+    agent = CartisanShoppingRuntime(services=services, store=store, client=client)
+
+    await run(agent, "What kind of products do you have?", SessionState())
+
+    assert client.calls[0]["tool_choice"] == {"type": "tool", "name": "search_products"}
+
+
 async def test_a_compatibility_question_answers_from_the_structured_rules(core):
     """Catalogue grounding of the one claim the agent must never guess at. The weak
     charger is refused by a rule row, and the verdict reaches the model in the rule's
@@ -162,6 +178,27 @@ async def test_an_unpresented_variant_cannot_be_shown(core):
     events, _ = await run(agent, "show me something", SessionState())
 
     held = results(events)["present_products"]
+    assert held["status"] == "blocked" and held["reason"] == PROVENANCE_GATE
+    assert not [event for event in events if event.type == "ui"]
+
+
+async def test_an_ungrounded_browse_chip_cannot_be_shown(core):
+    """A chip is a visible inventory claim, so it cannot invent a store category."""
+    store, services = core
+    agent = runtime(
+        store,
+        services,
+        [
+            tool_calls_message(
+                ("present_suggestions", {"suggestions": ["Browse phones"]})
+            ),
+            text_message("Let me check the catalogue first."),
+        ],
+    )
+
+    events, _ = await run(agent, "What do you carry?", SessionState())
+
+    held = results(events)["present_suggestions"]
     assert held["status"] == "blocked" and held["reason"] == PROVENANCE_GATE
     assert not [event for event in events if event.type == "ui"]
 

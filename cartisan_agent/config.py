@@ -66,6 +66,13 @@ class CartisanAgentConfig(BaseAgentConfig):
     checkout_precedence: bool = True
     catalog_grounding_gate: bool = True
     variant_id_patterns: tuple[str, ...] = (r"\bsd_var_[a-z0-9]+\b", r"\bvar_[a-z0-9]{6,}\b")
+    catalog_browse_terms: tuple[str, ...] = (
+        "product", "products", "catalog", "catalogue", "range", "selection",
+        "category", "categories", "kind", "kinds", "type", "types", "everything",
+    )
+    catalog_browse_cues: tuple[str, ...] = (
+        "what", "which", "show", "browse", "list", "carry", "sell", "stock", "have",
+    )
     policy_grounding_gate: bool = True
     policy_intent_terms: tuple[str, ...] = (
         "return", "returns", "refund", "refunds", "exchange", "warranty", "guarantee",

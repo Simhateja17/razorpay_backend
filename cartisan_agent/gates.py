@@ -94,9 +94,20 @@ def _catalog(config: CartisanAgentConfig, text: str, state: SessionState) -> dic
     return {"variant_id": token}
 
 
+def _catalog_browse(
+    config: CartisanAgentConfig, text: str, _: SessionState
+) -> dict[str, Any] | None:
+    """A store-range claim starts from the real catalogue, not the store's label."""
+    fires = config.catalog_grounding_gate and matches_terms_and_cues(
+        text, config.catalog_browse_terms, config.catalog_browse_cues
+    )
+    return {"query": ""} if fires else None
+
+
 GROUNDING_RULES: tuple[GroundingRule, ...] = (
     GroundingRule("policy", "search_policies", _policy),
     GroundingRule("orders", "get_orders", _orders),
+    GroundingRule("catalog_browse", "search_products", _catalog_browse),
     GroundingRule("catalog", "get_product_details", _catalog),
 )
 

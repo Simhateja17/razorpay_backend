@@ -14,6 +14,7 @@ catalogue would charge.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -411,6 +412,39 @@ async def _enrich_guide(payload: GuidePayload, context: EnrichmentContext) -> di
     }
 
 
+async def _enrich_suggestions(
+    payload: PresentSuggestionsPayload, context: EnrichmentContext
+) -> dict[str, Any]:
+    """Treat a Browse/Shop chip as an inventory claim, not decorative prose.
+
+    Exact catalogue category labels are intentionally required. A product result may
+    mention a phone case, but that is not authority to widen the claim to "phones".
+    """
+    categories = {
+        _catalogue_label(variant.category)
+        for variant in _state(context).seen_variants.values()
+        if variant.category
+    }
+    for chip in payload.suggestions:
+        match = re.match(r"^\s*(?:browse|shop)\s+(.+?)\s*$", chip, re.IGNORECASE)
+        if match is None:
+            continue
+        requested = _catalogue_label(match.group(1))
+        if requested not in categories:
+            available = ", ".join(sorted(categories)) or "none read this turn"
+            raise PresentationRefused(
+                f"{chip!r} claims a catalogue category that was not returned by a "
+                f"catalogue read. Use an exact returned category label; available: "
+                f"{available}.",
+                gate=PROVENANCE_GATE,
+            )
+    return payload.model_dump(exclude_none=True)
+
+
+def _catalogue_label(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
 PRESENTATION_COMPONENTS: dict[str, PresentationComponent] = {
     "present_products": PresentationComponent(
         name="present_products",
@@ -452,5 +486,6 @@ PRESENTATION_COMPONENTS: dict[str, PresentationComponent] = {
         name=CHIPS_TOOL,
         component=CHIPS_COMPONENT,
         payload_model=PresentSuggestionsPayload,
+        enrich=_enrich_suggestions,
     ),
 }

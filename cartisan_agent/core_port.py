@@ -49,6 +49,8 @@ _STOPWORDS = frozenset(
         "a", "an", "and", "the", "for", "with", "want", "need", "show", "some", "under",
         "this", "that", "please", "can", "you", "could", "would", "me", "my", "of", "to",
         "in", "on", "is", "are", "it", "i", "looking", "something", "good", "best",
+        "product", "products", "catalog", "catalogue", "range", "selection", "kind",
+        "kinds", "type", "types", "everything", "carry", "sell", "stock", "have",
     }
 )
 
@@ -92,13 +94,17 @@ class CoreCommercePort(CommercePort):
             # AND across every token would answer "usb-c charger" with nothing, and an
             # empty result reads to the model as proof the catalogue lacks the item.
             ors = " OR ".join(
-                "(lower(v.title) LIKE ? OR lower(p.title) LIKE ? OR lower(p.brand) LIKE ? "
-                "OR lower(p.description) LIKE ?)"
-                for _ in terms
+                "(" + " OR ".join(
+                    "(lower(v.title) LIKE ? OR lower(p.title) LIKE ? OR lower(p.brand) LIKE ? "
+                    "OR lower(p.description) LIKE ?)"
+                    for _ in _term_forms(term)
+                ) + ")"
+                for term in terms
             )
             clauses.append(f"({ors})")
             for term in terms:
-                params += [f"%{term}%"] * 4
+                for form in _term_forms(term):
+                    params += [f"%{form}%"] * 4
         if filters.category:
             clauses.append("lower(c.name) = ?")
             params.append(filters.category.lower())
@@ -122,7 +128,10 @@ class CoreCommercePort(CommercePort):
                 str(row.get(key) or "")
                 for key in ("title", "product_title", "brand", "category")
             ).lower()
-            scored.append((sum(term in haystack for term in terms), variant))
+            score = sum(_matches_search_term(term, haystack) for term in terms)
+            if terms and score == 0:
+                continue
+            scored.append((score, variant))
         if filters.sort == "price_asc":
             scored.sort(key=lambda pair: pair[1].price_minor)
         elif filters.sort == "price_desc":
@@ -659,6 +668,22 @@ class CoreCommercePort(CommercePort):
 
 def _tokens(text: str) -> list[str]:
     return [token for token in "".join(c.lower() if c.isalnum() else " " for c in text).split()]
+
+
+def _term_forms(term: str) -> tuple[str, ...]:
+    """The query spelling and a conservative English singular for token matching."""
+    forms = [term]
+    if len(term) > 3 and term.endswith("ies"):
+        forms.append(f"{term[:-3]}y")
+    elif len(term) > 3 and term.endswith("s") and not term.endswith("ss"):
+        forms.append(term[:-1])
+    return tuple(dict.fromkeys(forms))
+
+
+def _matches_search_term(term: str, haystack: str) -> bool:
+    """Match complete tokens so `phone` cannot leak through `headphones`."""
+    words = set(_tokens(haystack))
+    return any(form in words for form in _term_forms(term))
 
 
 def _spec_value(row: dict) -> str:

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "gate": "contract",
+  "status": "failed",
+  "started_at": "2026-09-04T05:22:40.216920+00:00",
+  "finished_at": "2026-09-04T05:22:55.710133+00:00",
+  "claim": {
+    "key": "gate_pass_rate",
+    "value": 0.0,
+    "unit": "ratio",
+    "claim_kind": "observed",
+    "basis": "completed gate commands / required gate commands",
+    "inputs": {
+      "completed": 0,
+      "required": 1
+    },
+    "limitations": [
+      "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python -m pytest -q -m contract"
+    ]
+  },
+  "correlation_ids": [],
+  "reason": "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python -m pytest -q -m contract",
+  "commands": [
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "-m",
+      "contract"
+    ]
+  ],
+  "output": [
+    "...............F........................................................ [ 51%]\n....................................................................     [100%]\n=================================== FAILURES ===================================\n___________ test_an_unsigned_webhook_never_reaches_the_commerce_core ___________\n\nworld = namespace(store=<marketplace_backend.store.Store object at 0x109695010>, port=<cartisan_agent.core_port.CoreCommercePo...th.HealthMetrics object at 0x1096959d0>, recovery=<marketplace_backend.recovery.RecoveryService object at 0x109695a90>)\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1095aab10>\n\n    def test_an_unsigned_webhook_never_reaches_the_commerce_core(world, monkeypatch):\n>       import api.main as api_main\n\ntests/test_phase5_checkout.py:297: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \napi/main.py:67: in <module>\n    db = Store(\nmarketplace_backend/store.py:54: in __init__\n    self._connect_postgres(database_url)\nmarketplace_backend/store.py:119: in _connect_postgres\n    self._pool.wait(timeout=10)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <psycopg_pool.pool.ConnectionPool 'pool-1' at 0x10a5e1fd0>, timeout = 10\n\n    def wait(self, timeout: float = 30.0) -> None:\n        \"\"\"\n        Wait for the pool to be full (with `min_size` connections) after creation.\n    \n        Close the pool, and raise `PoolTimeout`, if not ready within *timeout*\n        sec.\n    \n        Calling this method is not mandatory: you can try and use the pool\n        immediately after its creation. The first client will be served as soon\n        as a connection is ready. You can use this method if you prefer your\n        program to terminate in case the environment is not configured\n        properly, rather than trying to stay up the hardest it can.\n        \"\"\"\n        self._check_open_getconn()\n    \n        with self._lock:\n            assert not self._pool_full_event\n            if len(self._pool) >= self._min_size:\n                return\n            self._pool_full_event = Event()\n    \n        logger.info(\"waiting for pool %r initialization\", self.name)\n        if not self._pool_full_event.wait(timeout):\n            self.close()  # stop all the tasks\n>           raise PoolTimeout(f\"pool initialization incomplete after {timeout} sec\")\nE           psycopg_pool.PoolTimeout: pool initialization incomplete after 10 sec\n\n.venv/lib/python3.14/site-packages/psycopg_pool/pool.py:163: PoolTimeout\n------------------------------ Captured log call -------------------------------\nWARNING  psycopg.pool:pool.py:673 error connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nWARNING  psycopg.pool:pool.py:673 error connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nWARNING  psycopg.pool:pool.py:673 error connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nWARNING  psycopg.pool:pool.py:673 error connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\n=============================== warnings summary ===============================\n.venv/lib/python3.14/site-packages/starlette/testclient.py:53\n  /Users/teja/Razorpay_Buildathon/backend/.venv/lib/python3.14/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.\n    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_phase5_checkout.py::test_an_unsigned_webhook_never_reaches_the_commerce_core\n1 failed, 139 passed, 170 deselected, 1 warning in 15.23s\n"
+  ]
+}

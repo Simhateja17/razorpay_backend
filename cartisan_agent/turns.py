@@ -124,9 +124,13 @@ class TurnStore:
             (session.conversation_id,),
         )[0]["last"]
         turn_id = f"turn_{uuid4().hex[:12]}"
+        # The turn continues the lineage the request arrived on rather than starting
+        # its own: a browser action and the turn it causes are one journey, not two.
+        lineage = correlation_id or session.correlation_id or f"corr_{uuid4().hex[:12]}"
         self.store.execute(
             "INSERT INTO turns (id,conversation_id,sequence,state,user_message,prompt_version,"
-            "tool_contract_version,skill_versions,started_at) VALUES (?,?,?,'running',?,?,?,?,?)",
+            "tool_contract_version,skill_versions,correlation_id,demo_run_id,started_at) "
+            "VALUES (?,?,?,'running',?,?,?,?,?,?,?)",
             (
                 turn_id,
                 session.conversation_id,
@@ -135,6 +139,8 @@ class TurnStore:
                 prompt_version,
                 tool_contract_version,
                 skill_versions,
+                lineage,
+                session.demo_run_id,
                 iso_now(),
             ),
         )
@@ -142,7 +148,7 @@ class TurnStore:
             turn_id=turn_id,
             conversation_id=session.conversation_id,
             sequence=int(sequence) + 1,
-            correlation_id=correlation_id or f"corr_{uuid4().hex[:12]}",
+            correlation_id=lineage,
             prompt_version=prompt_version,
             tool_contract_version=tool_contract_version,
             skill_versions=skill_versions,
@@ -269,6 +275,20 @@ class TurnStore:
             "turn_id": rows[0]["id"],
             "agent_message": rows[0]["agent_message"],
         }
+
+    def history(self, conversation_id: str, limit: int = 40) -> list[dict]:
+        """The conversation as the `turns` table remembers it, oldest first.
+
+        This is not the model's message array — the tool_use blocks that array needs
+        stay in the process that is running the turn. It is what a person should see
+        again after a reload or a restart: what they asked, and what they were told.
+        """
+        rows = self.store.rows(
+            "SELECT id,sequence,state,user_message,agent_message,correlation_id,started_at "
+            "FROM turns WHERE conversation_id = ? ORDER BY sequence DESC LIMIT ?",
+            (conversation_id, max(1, min(limit, 200))),
+        )
+        return list(reversed(rows))
 
     def tool_executions(self, turn_id: str) -> list[dict]:
         return self.store.rows(

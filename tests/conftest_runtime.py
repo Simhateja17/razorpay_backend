@@ -17,6 +17,9 @@ from marketplace_backend.checkout import CheckoutRepository
 from marketplace_backend.evidence import CommerceEventLog, EvidenceLedger, Inbox, Outbox
 from marketplace_backend.inventory import InventoryRepository
 from marketplace_backend.payments import PaymentLinkDispatcher, WebhookProcessor
+from marketplace_backend.health import HealthMetrics
+from marketplace_backend.observability import EvidenceView
+from marketplace_backend.recovery import RecoveryService
 from marketplace_backend.shopping import ShoppingService
 from marketplace_backend.store import Store
 
@@ -121,8 +124,9 @@ def build_services(store: Store, config: CartisanAgentConfig | None = None) -> C
 
 class FakeGateway:
     """A Razorpay stand-in that behaves like the real one where it matters: the same
-    `reference_id` always returns the same link, because the provider treats the
-    internal order id as an idempotency key (ADR 0011)."""
+    `reference_id` always returns the same link (the provider treats it as an
+    idempotency key, ADR 0011), and a different `reference_id` — a different payment
+    attempt — always gets a genuinely different one."""
 
     def __init__(self, fail_times: int = 0) -> None:
         self.calls: list[dict] = []
@@ -160,8 +164,11 @@ def build_shopping(store: Store, gateway: FakeGateway | None = None,
     return SimpleNamespace(
         store=store, port=port, checkout=checkout, inventory=checkout.inventory,
         ledger=ledger, outbox=outbox, inbox=inbox, gateway=gateway, dispatcher=dispatcher,
-        service=ShoppingService(store, port, checkout, dispatcher),
+        service=ShoppingService(store, port, checkout, dispatcher, ledger),
         webhooks=WebhookProcessor(store, checkout, inbox, ledger),
+        evidence=EvidenceView(store),
+        health=HealthMetrics(store),
+        recovery=RecoveryService(store, checkout, ledger),
     )
 
 

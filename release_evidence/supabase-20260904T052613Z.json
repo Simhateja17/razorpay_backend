@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "gate": "supabase",
+  "status": "failed",
+  "started_at": "2026-09-04T05:26:13.238226+00:00",
+  "finished_at": "2026-09-04T05:26:36.684842+00:00",
+  "claim": {
+    "key": "gate_pass_rate",
+    "value": 0.0,
+    "unit": "ratio",
+    "claim_kind": "observed",
+    "basis": "completed gate commands / required gate commands",
+    "inputs": {
+      "completed": 0,
+      "required": 3
+    },
+    "limitations": [
+      "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python scripts/verify_phase5_live.py"
+    ]
+  },
+  "correlation_ids": [],
+  "reason": "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python scripts/verify_phase5_live.py",
+  "commands": [
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase5_live.py"
+    ],
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase6_live.py"
+    ],
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase7_live.py"
+    ]
+  ],
+  "output": [
+    "error connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nerror connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nerror connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nerror connecting in 'pool-1': failed to resolve host 'aws-0-ap-south-1.pooler.supabase.com': [Errno 8] nodename nor servname provided, or not known\nTraceback (most recent call last):\n  File \"/Users/teja/Razorpay_Buildathon/backend/scripts/verify_phase5_live.py\", line 389, in <module>\n    sys.exit(main())\n             ~~~~^^\n  File \"/Users/teja/Razorpay_Buildathon/backend/scripts/verify_phase5_live.py\", line 364, in main\n    store = Store(database_url=url)\n  File \"/Users/teja/Razorpay_Buildathon/backend/marketplace_backend/store.py\", line 54, in __init__\n    self._connect_postgres(database_url)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/Users/teja/Razorpay_Buildathon/backend/marketplace_backend/store.py\", line 119, in _connect_postgres\n    self._pool.wait(timeout=10)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^\n  File \"/Users/teja/Razorpay_Buildathon/backend/.venv/lib/python3.14/site-packages/psycopg_pool/pool.py\", line 163, in wait\n    raise PoolTimeout(f\"pool initialization incomplete after {timeout} sec\")\npsycopg_pool.PoolTimeout: pool initialization incomplete after 10 sec\n"
+  ]
+}

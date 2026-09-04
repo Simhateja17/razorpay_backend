@@ -151,15 +151,14 @@ class Probe:
             link = await client.create_payment_link(
                 amount=100_00, reference_id=reference, description="Cartisan Phase 5 probe")
         except Exception as exc:  # noqa: BLE001
-            # A provider outage is not a Cartisan defect, and the dispatcher already
-            # proves it degrades safely, so this reports rather than fails the run.
-            print(f"  --  skipped: provider unavailable ({exc})")
-            return
+            # This is an independent provider gate. Unavailability is not a Cartisan
+            # defect, but it is also not a pass: let the caller report failed/not-run.
+            raise RuntimeError(f"Razorpay test-mode gate unavailable: {exc}") from exc
         self.check("razorpay returns a usable test-mode link",
                    bool(link.get("id")) and bool(link.get("short_url")), str(link))
         self.check("the link is for the amount we asked for",
                    int(link.get("amount", 0)) == 100_00, str(link.get("amount")))
-        print(f"      {link['short_url']}")
+        print("      received a test-mode short URL (redacted)")
 
     async def run(self) -> None:
         variant_id, price = self.pick_variant()

@@ -264,10 +264,17 @@ create table if not exists commerce_orders (
   amount_paid_minor integer not null default 0 check (amount_paid_minor >= 0),
   origin text not null default 'live_app' check (origin in ('seeded', 'live_app', 'razorpay_test')),
   state_version integer not null default 0 check (state_version >= 0),
+  -- The lineage the order was created under, so the journey that produced it can be
+  -- followed from the browser request through to the provider event (ADR 0032).
+  -- Nullable: an order created before this column existed still has to read.
+  correlation_id text,
+  demo_run_id text,
   created_at timestamptz not null default now(),
   paid_at timestamptz,
   cancelled_at timestamptz
 );
+
+create index if not exists commerce_orders_correlation_idx on commerce_orders (correlation_id);
 
 create index if not exists commerce_orders_customer_idx on commerce_orders (customer_id, created_at);
 create index if not exists commerce_orders_status_idx on commerce_orders (status, created_at);
@@ -304,6 +311,11 @@ create table if not exists payment_attempts (
   -- for evidence. Never read as authority for order state.
   provider_snapshot text,
   failure_reason text,
+  -- Carried so the provider's answer rejoins the journey that asked for the link.
+  -- A webhook knows only a provider reference; this is how that reference leads
+  -- back to the turn the customer started.
+  correlation_id text,
+  demo_run_id text,
   created_at timestamptz not null default now(),
   resolved_at timestamptz
 );
@@ -492,9 +504,16 @@ create table if not exists turns (
   input_tokens integer,
   output_tokens integer,
   cache_read_tokens integer,
+  -- The turn's own lineage id, minted with the turn and carried by everything the
+  -- turn causes. Stored rather than held in memory, so a journey is followable
+  -- after the process that served it has gone.
+  correlation_id text,
+  demo_run_id text,
   started_at timestamptz not null default now(),
   completed_at timestamptz
 );
+
+create index if not exists turns_correlation_idx on turns (correlation_id);
 
 create index if not exists turns_conversation_idx on turns (conversation_id, sequence);
 
@@ -546,6 +565,9 @@ create table if not exists inbox_events (
   status text not null default 'received' check (status in
     ('received', 'processed', 'ignored', 'quarantined')),
   quarantine_reason text,
+  -- Set once the event is matched to an attempt, so a quarantined callback reads as
+  -- part of the journey it failed rather than as a loose row a human has to join.
+  correlation_id text,
   received_at timestamptz not null default now(),
   processed_at timestamptz
 );
@@ -585,6 +607,8 @@ create index if not exists evidence_actor_idx on evidence_records (actor_id, rec
 create index if not exists evidence_correlation_idx on evidence_records (correlation_id);
 create index if not exists evidence_target_idx on evidence_records (target_type, target_id);
 create index if not exists evidence_origin_idx on evidence_records (data_origin, recorded_at);
+create index if not exists evidence_demo_run_idx on evidence_records (demo_run_id, recorded_at);
+create index if not exists evidence_surface_idx on evidence_records (surface, recorded_at);
 """
 
 

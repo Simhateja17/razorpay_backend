@@ -12,7 +12,7 @@ from .core_schema import CORE_DDL, table_names, to_sqlite
 
 
 _TABLE_NAMES = (
-    "products", "carts", "orders", "approvals", "audit",
+    "products", "carts", "orders", "approvals",
     "customers", "merchant_operators", "customer_carts", "cart_lines", "idempotency_records",
 ) + table_names()
 
@@ -76,9 +76,6 @@ class Store:
         CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, kind TEXT NOT NULL, target_id TEXT,
           before_json TEXT NOT NULL, after_json TEXT NOT NULL, reasoning TEXT NOT NULL, status TEXT NOT NULL,
           created_at TEXT NOT NULL, decided_at TEXT);
-        CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, session_id TEXT NOT NULL,
-          agent TEXT NOT NULL, action TEXT NOT NULL, reasoning TEXT NOT NULL, outcome TEXT NOT NULL,
-          gated INTEGER NOT NULL, result_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY, email TEXT NOT NULL, display_name TEXT,
           origin TEXT NOT NULL DEFAULT 'live_app', created_at TEXT NOT NULL DEFAULT (datetime('now')));
         CREATE TABLE IF NOT EXISTS merchant_operators(id TEXT PRIMARY KEY, email TEXT NOT NULL,

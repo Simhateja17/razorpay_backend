@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "gate": "browser",
+  "status": "passed",
+  "started_at": "2026-09-04T05:29:24Z",
+  "finished_at": "2026-09-04T05:35:13Z",
+  "claim": {
+    "key": "gate_pass_rate",
+    "value": 1.0,
+    "unit": "ratio",
+    "claim_kind": "observed",
+    "basis": "completed browser checks / required browser checks",
+    "inputs": {
+      "completed": 8,
+      "required": 8
+    },
+    "limitations": [
+      "Razorpay settlement was exercised by the separate provider gate, not repeated in this browser session."
+    ]
+  },
+  "correlation_ids": [],
+  "reason": null,
+  "checks": [
+    "unauthenticated portal presents the Supabase sign-in gate",
+    "maya@example.com authenticates as merchant operator",
+    "operator metrics load with formula inputs and seeded-origin limits",
+    "merchant agent answers from a real get_business_snapshot tool read",
+    "merchant transcript repaints from durable turns after reload",
+    "ira@example.com authenticates as shopper without operator-only requests",
+    "grounded charger comparison renders server-backed products and prices",
+    "authoritative cart addition and transcript survive reload; QA cart line was removed"
+  ],
+  "browser": "Playwright CLI, headed Chromium",
+  "origin": "http://localhost:3000",
+  "backend": "http://127.0.0.1:8010",
+  "console_errors_on_final_reload": 0
+}

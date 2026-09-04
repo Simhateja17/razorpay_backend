@@ -177,8 +177,31 @@ class SessionContext(ClockContext):
     conversation_id: str
     customer_id: str
     surface: Surface = "shopping"
+    # One lineage per journey (ADR 0032). The host mints it for the request; the
+    # runtime stamps the turn it opens with it and writes `turn_id` back here, so the
+    # browser action, the turn, each tool call, the transaction it commits, the
+    # Razorpay attempt and the webhook that settles it all carry the same id.
+    # `demo_run_id` groups a whole demo, so an audit view can exclude every other
+    # session's noise. Neither carries authority: they group evidence and nothing else.
+    correlation_id: str | None = None
+    turn_id: str | None = None
     demo_run_id: str | None = None
     page: PageContext = Field(default_factory=PageContext)
+
+    def correlation(self) -> Any:
+        """This session's lineage as the ledger's value object.
+
+        A session with no id yet mints one rather than returning None, so a caller
+        that forgets to thread the lineage still writes *a* lineage — the failure
+        mode is a short journey, never an unattributed row.
+        """
+        from marketplace_backend.evidence import Correlation
+
+        return Correlation(
+            correlation_id=self.correlation_id or Correlation().correlation_id,
+            turn_id=self.turn_id,
+            demo_run_id=self.demo_run_id,
+        )
 
     @property
     def session_id(self) -> str:

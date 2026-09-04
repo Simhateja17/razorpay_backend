@@ -28,9 +28,10 @@ from cartisan_agent.types import SessionContext
 
 from .carts import ConflictError, IdempotencyLedger
 from .checkout import CheckoutRepository, StageExpired, StageMismatch
-from .evidence import Correlation
+from .evidence import Actor, Correlation, EvidenceLedger
 from .inventory import InsufficientStock
 from .payments import PaymentLinkDispatcher
+from .recovery import order_recovery_actions
 from .state_machines import TransitionError
 from .store import Store
 
@@ -46,14 +47,22 @@ class ShoppingService:
         port: CoreCommercePort,
         checkout: CheckoutRepository,
         dispatcher: PaymentLinkDispatcher,
+        ledger: EvidenceLedger | None = None,
     ) -> None:
         self.store, self.port, self.checkout = store, port, checkout
         self.dispatcher = dispatcher
+        self.ledger = ledger or EvidenceLedger(store)
         self.idempotency = IdempotencyLedger(store)
 
     @staticmethod
-    def session(customer_id: str) -> SessionContext:
-        return SessionContext(conversation_id=f"rest:{customer_id}", customer_id=customer_id)
+    def session(customer_id: str, correlation: Correlation | None = None) -> SessionContext:
+        """The browser's own session. It is a real principal doing a real thing, so it
+        carries the request's lineage exactly as an agent turn does — that is what puts
+        a click and the turn it interrupts on the same journey (ADR 0032)."""
+        correlation = correlation or Correlation()
+        return SessionContext(
+            conversation_id=f"rest:{customer_id}", customer_id=customer_id,
+            correlation_id=correlation.correlation_id, demo_run_id=correlation.demo_run_id)
 
     # ---------------------------------------------------------------- catalogue
 
@@ -118,46 +127,57 @@ class ShoppingService:
 
     async def add(self, customer_id: str, variant_id: str, quantity: int, *,
                   expected_version: int | None = None,
-                  idempotency_key: str | None = None) -> dict:
+                  idempotency_key: str | None = None,
+                  correlation: Correlation | None = None) -> dict:
         return await self._mutate(
             "add_to_cart", customer_id, idempotency_key,
-            {"variant_id": variant_id, "quantity": quantity},
+            {"variant_id": variant_id, "quantity": quantity}, correlation,
             lambda session: self.port.add_to_cart(
                 session, variant_id, quantity,
-                expected_state_version=expected_version, idempotency_key=idempotency_key))
+                expected_state_version=expected_version, idempotency_key=None))
 
     async def update(self, customer_id: str, variant_id: str, quantity: int, *,
                      expected_version: int | None = None,
-                     idempotency_key: str | None = None) -> dict:
+                     idempotency_key: str | None = None,
+                     correlation: Correlation | None = None) -> dict:
         if quantity <= 0:
             return await self.remove(customer_id, variant_id,
                                      expected_version=expected_version,
-                                     idempotency_key=idempotency_key)
+                                     idempotency_key=idempotency_key,
+                                     correlation=correlation)
         return await self._mutate(
             "update_cart_item", customer_id, idempotency_key,
-            {"variant_id": variant_id, "quantity": quantity},
+            {"variant_id": variant_id, "quantity": quantity}, correlation,
             lambda session: self.port.update_cart_item(
                 session, variant_id, quantity,
-                expected_state_version=expected_version, idempotency_key=idempotency_key))
+                expected_state_version=expected_version, idempotency_key=None))
 
     async def remove(self, customer_id: str, variant_id: str, *,
                      expected_version: int | None = None,
-                     idempotency_key: str | None = None) -> dict:
+                     idempotency_key: str | None = None,
+                     correlation: Correlation | None = None) -> dict:
         return await self._mutate(
             "remove_from_cart", customer_id, idempotency_key, {"variant_id": variant_id},
+            correlation,
             lambda session: self.port.remove_from_cart(
                 session, variant_id,
-                expected_state_version=expected_version, idempotency_key=idempotency_key))
+                expected_state_version=expected_version, idempotency_key=None))
 
     async def _mutate(self, operation: str, customer_id: str, idempotency_key: str | None,
-                      request: dict, effect: Any) -> dict:
+                      request: dict, correlation: Correlation | None, effect: Any) -> dict:
         """Run one cart mutation exactly once, whatever the network does.
 
-        The ledger is checked and written around the effect rather than inside a
-        callback, because the effect is a coroutine and `IdempotencyLedger.run`
-        takes a synchronous one.
+        The idempotency ledger is checked and written around the effect rather than
+        inside a callback, because the effect is a coroutine and
+        `IdempotencyLedger.run` takes a synchronous one.
+
+        The evidence row is written here, at the host boundary, and deliberately not
+        in the port: the agent's identical call is already recorded once by
+        `TurnStore.record_tool`, and recording it in the port as well would put two
+        rows in the journey for one thing that happened.
         """
-        session = self.session(customer_id)
+        correlation = correlation or Correlation()
+        session = self.session(customer_id, correlation)
         if idempotency_key:
             recorded = self.store.rows(
                 "SELECT operation, request_fingerprint, response_json FROM idempotency_records "
@@ -169,12 +189,26 @@ class ShoppingService:
                     raise ConflictError(
                         "This idempotency key was already used for a different request")
                 return self.store.load(row["response_json"])
+        actor = Actor("customer", customer_id, "shopping")
         try:
             cart = _cart_dto(await effect(session), customer_id)
         except Conflict as exc:
+            self.ledger.record(
+                actor=actor, action=operation, reason="Cart changed after it was read",
+                outcome="conflict", target_type="cart", target_id=None,
+                policy_checks={"error": str(exc)}, correlation=correlation)
             raise ConflictError(str(exc)) from exc
         except Unavailable as exc:
+            self.ledger.record(
+                actor=actor, action=operation, reason="The cart write could not be applied",
+                outcome="unavailable", target_type="cart", target_id=None,
+                policy_checks={"error": str(exc)}, correlation=correlation)
             raise ValueError(str(exc)) from exc
+        self.ledger.record(
+            actor=actor, action=operation, reason="Customer changed their cart in the browser",
+            outcome="applied", target_type="cart", target_id=cart["cart_id"],
+            state_ref={**request, "state_version": cart["state_version"]},
+            correlation=correlation)
         if idempotency_key:
             self.store.execute(
                 "INSERT INTO idempotency_records (key,principal_id,operation,request_fingerprint,"
@@ -186,11 +220,13 @@ class ShoppingService:
     # ----------------------------------------------------------------- checkout
 
     async def stage(self, customer_id: str, *, fulfillment_option: str = "standard",
-                    note: str | None = None) -> dict:
+                    note: str | None = None,
+                    correlation: Correlation | None = None) -> dict:
         """Price the authoritative cart into an expiring preview. Holds nothing."""
         try:
             staged = await self.port.stage_checkout(
-                self.session(customer_id), fulfillment_option=fulfillment_option, note=note)
+                self.session(customer_id, correlation),
+                fulfillment_option=fulfillment_option, note=note)
         except Unavailable as exc:
             raise CheckoutRefused(str(exc)) from exc
         return staged.model_dump()
@@ -213,7 +249,7 @@ class ShoppingService:
             if recorded:
                 return self.store.load(recorded[0]["response_json"])
 
-        cart = await self.port.get_cart(self.session(customer_id))
+        cart = await self.port.get_cart(self.session(customer_id, correlation))
         try:
             order = self.checkout.confirm(
                 stage_id=stage_id, customer_id=customer_id,
@@ -259,6 +295,8 @@ class ShoppingService:
         attempt on the *same* internal order, so a retry never becomes a second
         order and never re-reserves stock the customer already holds (ADR 0030).
         """
+        if correlation is None:
+            correlation = self._order_correlation(self.checkout.read_order(order_id))
         try:
             attempt = self.checkout.open_attempt(
                 order_id=order_id, customer_id=customer_id, correlation=correlation)
@@ -278,12 +316,25 @@ class ShoppingService:
             "pay_url": current.get("provider_link_url"),
         }
 
-    def redirect_returned(self, customer_id: str, order_id: str) -> dict:
+    def redirect_returned(self, customer_id: str, order_id: str, *,
+                          correlation: Correlation | None = None) -> dict:
         """The customer came back from the provider. That is not payment (ADR 0013)."""
         order = self._own_order(customer_id, order_id)
         if order["status"] == "pending_payment":
-            order = self.checkout.mark_verification_pending(order_id)
+            order = self.checkout.mark_verification_pending(
+                order_id, correlation=correlation or self._order_correlation(order))
         return self._titled(_order_dto(order))
+
+    @staticmethod
+    def _order_correlation(order: dict) -> Correlation:
+        """The journey this order already belongs to.
+
+        A redirect or a retry arrives on its own request, but it is a later step of
+        the journey that created the order — so it continues that lineage rather than
+        opening a second one for the same purchase.
+        """
+        return Correlation(correlation_id=order.get("correlation_id") or Correlation().correlation_id,
+                           demo_run_id=order.get("demo_run_id"))
 
     # ------------------------------------------------------------------- orders
 
@@ -361,7 +412,14 @@ def _order_dto(order: dict) -> dict:
         "discount_minor": order["discount_minor"],
         "total_minor": order["total_minor"],
         "amount_paid_minor": order["amount_paid_minor"],
+        # The origin label travels with the order rather than being inferred from
+        # where it is shown, so a reader never has to guess whether they are looking
+        # at seeded history, a live app purchase, or a scenario pack (ADR 0008, 0032).
         "origin": order["origin"],
+        # The lineage this purchase belongs to, so an order links straight to its
+        # journey, and what can still be done about it if it is stuck (ADR 0030).
+        "correlation_id": order.get("correlation_id"),
+        "recovery_actions": order_recovery_actions(order["status"]),
         "created_at": str(order["created_at"]),
         "lines": [
             {
@@ -378,6 +436,11 @@ def _order_dto(order: dict) -> dict:
                 "status": attempt["status"],
                 "amount_minor": attempt["amount_minor"],
                 "provider_reference": attempt.get("provider_reference"),
+                "failure_reason": attempt.get("failure_reason"),
+                # Carried so a client that lost its in-memory checkout state (a
+                # reload, a new tab) can rebuild the payment panel from `GET
+                # /orders/{id}` alone, rather than needing a live handoff response.
+                "pay_url": attempt.get("provider_link_url"),
             }
             for attempt in order["attempts"]
         ],

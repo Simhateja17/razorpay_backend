@@ -172,10 +172,11 @@ class CheckoutRepository:
                 tx.execute(
                     "INSERT INTO commerce_orders (id,customer_id,stage_id,status,currency,subtotal_minor,"
                     "shipping_minor,tax_minor,discount_minor,total_minor,amount_paid_minor,origin,"
-                    "state_version,created_at) VALUES (?,?,?,'pending_payment','INR',?,?,?,?,?,0,?,0,?)",
+                    "state_version,correlation_id,demo_run_id,created_at) "
+                    "VALUES (?,?,?,'pending_payment','INR',?,?,?,?,?,0,?,0,?,?,?)",
                     (order_id, customer_id, stage_id, stage["subtotal_minor"], stage["shipping_minor"],
                      stage["tax_minor"], stage["discount_minor"], stage["total_minor"],
-                     origin, _now()))
+                     origin, correlation.correlation_id, correlation.demo_run_id, _now()))
                 for line in stage["lines"]:
                     tx.execute(
                         "INSERT INTO commerce_order_lines (id,order_id,variant_id,quantity,"
@@ -216,7 +217,9 @@ class CheckoutRepository:
             "SELECT id,variant_id,quantity,unit_price_minor,amount_minor,recommendation_id "
             "FROM commerce_order_lines WHERE order_id=? ORDER BY id", (order_id,))
         order["attempts"] = self.store.rows(
-            "SELECT id,status,amount_minor,provider_reference,created_at FROM payment_attempts "
+            "SELECT id,status,amount_minor,provider_reference,provider_link_url,"
+            "failure_reason,correlation_id,created_at,resolved_at "
+            "FROM payment_attempts "
             "WHERE order_id=? ORDER BY created_at", (order_id,))
         return order
 
@@ -247,16 +250,24 @@ class CheckoutRepository:
         attempt_id = _id("pay")
         with self.store.transaction() as tx:
             tx.execute(
-                "INSERT INTO payment_attempts (id,order_id,provider,status,amount_minor,currency,created_at) "
-                "VALUES (?,?,'razorpay','created',?,'INR',?)",
-                (attempt_id, order_id, order["total_minor"], _now()))
+                "INSERT INTO payment_attempts (id,order_id,provider,status,amount_minor,currency,"
+                "correlation_id,demo_run_id,created_at) VALUES (?,?,'razorpay','created',?,'INR',?,?,?)",
+                (attempt_id, order_id, order["total_minor"], correlation.correlation_id,
+                 correlation.demo_run_id, _now()))
             self.outbox.enqueue(
                 topic="razorpay.payment_link.create",
                 payload={"attempt_id": attempt_id, "order_id": order_id,
                          "amount_minor": order["total_minor"], "currency": "INR",
-                         # The internal order is the idempotency key, so a retried
-                         # delivery cannot create a second link for the same order.
-                         "idempotency_key": f"order:{order_id}"},
+                         # Keyed on the ATTEMPT, not the order: a redelivery of this
+                         # exact message still cannot create a second link for this
+                         # attempt, but a genuinely new attempt (a retry after a
+                         # decline) gets its own key and its own link.
+                         #
+                         # Keying on the order alone would make every retry recover
+                         # the *first* attempt's link — including one Razorpay itself
+                         # has already cancelled or expired, which hands the customer
+                         # a dead link that fails the moment they click it.
+                         "idempotency_key": f"order:{order_id}:{attempt_id}"},
                 correlation_id=correlation.correlation_id, tx=tx)
             self.ledger.record(
                 actor=Actor("system", None, "shopping"), action="open_payment_attempt",

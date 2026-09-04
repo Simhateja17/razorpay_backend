@@ -19,9 +19,16 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
+# (email, password, display name, role). The role goes into Supabase *app* metadata,
+# which the client cannot set — `require_operator` reads it from the verified token
+# and never from the request, so this list grants a demo account its surface without
+# weakening the boundary (ADR 0010).
 IDENTITIES = [
-    ("ira@example.com", "cartisan-demo-shopper", "Ira Menon"),
-    ("dev@example.com", "cartisan-demo-shopper", "Dev Rao"),
+    ("ira@example.com", "cartisan-demo-shopper", "Ira Menon", "customer"),
+    ("dev@example.com", "cartisan-demo-shopper", "Dev Rao", "customer"),
+    # Without an operator the merchant portal, the approval queue and the operations
+    # views cannot be opened at all: every one of them is behind `require_operator`.
+    ("maya@example.com", "cartisan-demo-operator", "Maya Iyer", "merchant_operator"),
 ]
 
 
@@ -38,13 +45,13 @@ def main() -> int:
     headers = {"apikey": service_key, "Authorization": f"Bearer {service_key}",
                "Content-Type": "application/json"}
     failures = 0
-    for email, password, display_name in IDENTITIES:
+    for email, password, display_name, role in IDENTITIES:
         response = httpx.post(
             f"{url}/auth/v1/admin/users",
             headers=headers,
             json={"email": email, "password": password, "email_confirm": True,
                   "user_metadata": {"display_name": display_name},
-                  "app_metadata": {"cartisan_role": "customer"}},
+                  "app_metadata": {"cartisan_role": role}},
             timeout=20,
         )
         if response.status_code < 300:

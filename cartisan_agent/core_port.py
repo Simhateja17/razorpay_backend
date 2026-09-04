@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from marketplace_backend.carts import ConflictError
+from marketplace_backend.carts import ConflictError, IdempotencyLedger
 from marketplace_backend.checkout import CheckoutRepository
 from marketplace_backend.store import Store
 from marketplace_backend.timeutil import now as iso_now
@@ -72,6 +72,7 @@ class CoreCommercePort(CommercePort):
         self.store = store
         self.checkout = checkout
         self.config = config or CartisanAgentConfig()
+        self.idempotency = IdempotencyLedger(store)
 
     # -- catalogue ------------------------------------------------------------
 
@@ -207,16 +208,25 @@ class CoreCommercePort(CommercePort):
                 f"variant_id {variant_id} has no sellable stock, so nothing was added."
             )
         cart_id = self._active_cart_id(session.customer_id)
-        cap = self.config.max_quantity_per_item
-        with self.store.transaction() as tx:
-            self._guard_version(tx, cart_id, expected_state_version)
-            current = self._line_quantity(tx, cart_id, variant_id)
-            if current == 0 and self._line_count(tx, cart_id) >= self.config.max_cart_lines:
-                raise Unavailable("The cart is full.")
-            target = min(current + max(1, quantity), cap)
-            self._write_line(tx, cart_id, variant_id, target)
-            self._bump(tx, cart_id)
-        return self._render(cart_id)
+        request = {"variant_id": variant_id, "quantity": quantity,
+                   "expected_state_version": expected_state_version}
+
+        def effect() -> dict:
+            cap = self.config.max_quantity_per_item
+            with self.store.transaction() as tx:
+                self._guard_version(tx, cart_id, expected_state_version)
+                current = self._line_quantity(tx, cart_id, variant_id)
+                if current == 0 and self._line_count(tx, cart_id) >= self.config.max_cart_lines:
+                    raise Unavailable("The cart is full.")
+                target = min(current + max(1, quantity), cap)
+                self._write_line(tx, cart_id, variant_id, target)
+                self._bump(tx, cart_id)
+            return self._render(cart_id).model_dump()
+
+        result = self.idempotency.run(
+            principal_id=session.customer_id, operation="add_to_cart", key=idempotency_key,
+            request=request, effect=effect)
+        return Cart.model_validate(result)
 
     async def update_cart_item(
         self,
@@ -228,13 +238,24 @@ class CoreCommercePort(CommercePort):
         idempotency_key: str | None = None,
     ) -> Cart:
         cart_id = self._active_cart_id(session.customer_id)
-        with self.store.transaction() as tx:
-            self._guard_version(tx, cart_id, expected_state_version)
-            if self._line_quantity(tx, cart_id, variant_id) == 0:
-                raise Unavailable(f"The cart has no line for variant_id {variant_id}.")
-            self._write_line(tx, cart_id, variant_id, min(max(1, quantity), self.config.max_quantity_per_item))
-            self._bump(tx, cart_id)
-        return self._render(cart_id)
+        request = {"variant_id": variant_id, "quantity": quantity,
+                   "expected_state_version": expected_state_version}
+
+        def effect() -> dict:
+            with self.store.transaction() as tx:
+                self._guard_version(tx, cart_id, expected_state_version)
+                if self._line_quantity(tx, cart_id, variant_id) == 0:
+                    raise Unavailable(f"The cart has no line for variant_id {variant_id}.")
+                self._write_line(
+                    tx, cart_id, variant_id,
+                    min(max(1, quantity), self.config.max_quantity_per_item))
+                self._bump(tx, cart_id)
+            return self._render(cart_id).model_dump()
+
+        result = self.idempotency.run(
+            principal_id=session.customer_id, operation="update_cart_item", key=idempotency_key,
+            request=request, effect=effect)
+        return Cart.model_validate(result)
 
     async def remove_from_cart(
         self,
@@ -245,13 +266,21 @@ class CoreCommercePort(CommercePort):
         idempotency_key: str | None = None,
     ) -> Cart:
         cart_id = self._active_cart_id(session.customer_id)
-        with self.store.transaction() as tx:
-            self._guard_version(tx, cart_id, expected_state_version)
-            tx.execute(
-                "DELETE FROM cart_lines WHERE cart_id = ? AND product_id = ?", (cart_id, variant_id)
-            )
-            self._bump(tx, cart_id)
-        return self._render(cart_id)
+        request = {"variant_id": variant_id, "expected_state_version": expected_state_version}
+
+        def effect() -> dict:
+            with self.store.transaction() as tx:
+                self._guard_version(tx, cart_id, expected_state_version)
+                tx.execute(
+                    "DELETE FROM cart_lines WHERE cart_id = ? AND product_id = ?",
+                    (cart_id, variant_id))
+                self._bump(tx, cart_id)
+            return self._render(cart_id).model_dump()
+
+        result = self.idempotency.run(
+            principal_id=session.customer_id, operation="remove_from_cart", key=idempotency_key,
+            request=request, effect=effect)
+        return Cart.model_validate(result)
 
     async def stage_checkout(
         self,
@@ -272,22 +301,29 @@ class CoreCommercePort(CommercePort):
                     f"variant_id {line.variant_id} no longer has {line.quantity} units "
                     "available, so the checkout was not staged."
                 )
-        stage = self.checkout.stage(
-            customer_id=session.customer_id,
-            cart_id=cart.cart_id,
-            cart_state_version=cart.state_version,
-            lines=[
-                {
+        request = {"cart_id": cart.cart_id, "cart_state_version": cart.state_version,
+                   "fulfillment_option": fulfillment_option, "note": note}
+
+        def effect() -> dict:
+            stage = self.checkout.stage(
+                customer_id=session.customer_id,
+                cart_id=cart.cart_id,
+                cart_state_version=cart.state_version,
+                lines=[{
                     "variant_id": line.variant_id,
                     "quantity": line.quantity,
                     "unit_price_minor": line.unit_price_minor,
-                }
-                for line in cart.lines
-            ],
-            fulfillment_option=fulfillment_option,
-            constraints_note=note,
-        )
-        return self._stage(stage)
+                } for line in cart.lines],
+                fulfillment_option=fulfillment_option,
+                constraints_note=note,
+                correlation=session.correlation(),
+            )
+            return self._stage(stage).model_dump()
+
+        result = self.idempotency.run(
+            principal_id=session.customer_id, operation="stage_checkout", key=idempotency_key,
+            request=request, effect=effect)
+        return StagedCheckout.model_validate(result)
 
     async def read_stage(self, session: SessionContext, stage_id: str) -> StagedCheckout | None:
         rows = self.store.rows(

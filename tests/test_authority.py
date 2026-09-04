@@ -12,13 +12,10 @@ tests/test_runtime_transcripts.py.
 import pytest
 from fastapi.testclient import TestClient
 
-from marketplace_backend.audit import AuditTrail
 from marketplace_backend.carts import ConflictError, IdempotencyLedger
 from marketplace_backend.identity import AuthenticationError, IdentityService, Principal
-from marketplace_backend.merchant_backend import MerchantBackend
 from marketplace_backend.routing import Intent, classify
 from marketplace_backend.store import Store
-from marketplace_backend.storefront_backend import StorefrontBackend
 
 from conftest_runtime import CUSTOMER, GOOD_CHARGER, LAPTOP, build_shopping, build_store
 
@@ -311,12 +308,20 @@ def test_merchant_operator_cannot_use_customer_endpoints(monkeypatch, world):
     assert client.get("/cart", headers={"Authorization": "Bearer t"}).status_code == 403
 
 
-def test_merchant_backend_still_builds(tmp_path):
-    """Merchant surfaces read the legacy flat catalogue until Phase 6, and must keep
-    working while shopping runs on the normalized core."""
-    store = Store(tmp_path / "merchant.db")
-    merchant = MerchantBackend(store, AuditTrail(store), StorefrontBackend(store, AuditTrail(store)))
-    assert merchant.business_snapshot("m1")["currency"] == "INR"
+def test_a_customer_cannot_use_the_merchant_endpoints(monkeypatch, world):
+    """The mirror of the test above. Phase 6 put the whole merchant surface behind an
+    operator principal, so a signed-in shopper reaches none of it."""
+    import api.main as api_main
+    api_main.app.dependency_overrides.clear()
+    monkeypatch.setattr(api_main.identity, "principal", lambda auth: Principal(
+        id=ALICE, email="alice@example.test", role="customer"))
+
+    client = TestClient(api_main.app)
+    headers = {"Authorization": "Bearer t"}
+    assert client.get("/portal/changes", headers=headers).status_code == 403
+    assert client.get("/portal/snapshot", headers=headers).status_code == 403
+    assert client.post("/chat/portal", headers=headers,
+                       json={"conversation_id": "c", "message": "hi"}).status_code == 403
 
 
 def test_conflict_error_is_still_the_cart_conflict_type():

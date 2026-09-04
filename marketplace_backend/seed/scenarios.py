@@ -46,6 +46,13 @@ class ScenarioContext:
     ledger: EvidenceLedger
     inbox: Inbox
     as_of: datetime
+    # The pack currently running. Every row it writes is stamped with it, so a judge
+    # can select one named story and see that story alone (ADR 0032).
+    demo_run_id: str | None = None
+
+    def correlation(self) -> Correlation:
+        """A fresh lineage inside this pack's demo run."""
+        return Correlation(demo_run_id=self.demo_run_id)
 
     def variant_with_stock(self, minimum: int, *, skip: int = 0) -> str:
         """A seeded variant with at least `minimum` sellable units, chosen deterministically."""
@@ -79,7 +86,7 @@ class ScenarioContext:
 
 def _golden_purchase(ctx: ScenarioContext) -> dict:
     """Search, one accepted cross-sell, staged checkout, verified payment, delivered."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     customer = ctx.customer(0)
     variant = ctx.variant_with_stock(2)
     stage = ctx.stage(customer, variant, 1, key="golden", correlation=correlation)
@@ -94,7 +101,8 @@ def _golden_purchase(ctx: ScenarioContext) -> dict:
     event, _ = ctx.inbox.receive(
         provider="razorpay", provider_event_id=f"evt_golden_{order['id'][-6:]}",
         event_type="payment_link.paid",
-        payload={"amount": order["total_minor"], "currency": "INR"})
+        payload={"amount": order["total_minor"], "currency": "INR"},
+        correlation=correlation)
     paid = ctx.checkout.settle_from_provider(
         attempt_id=attempt["id"], provider_reference=f"plink_golden_{order['id'][-6:]}",
         amount_minor=order["total_minor"], currency="INR", succeeded=True,
@@ -106,7 +114,7 @@ def _golden_purchase(ctx: ScenarioContext) -> dict:
 
 def _declined_then_retry(ctx: ScenarioContext) -> dict:
     """A declined card, then a successful retry against the same order and the same hold."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     customer = ctx.customer(1)
     variant = ctx.variant_with_stock(2, skip=1)
     stage = ctx.stage(customer, variant, 1, key="retry", correlation=correlation)
@@ -138,7 +146,7 @@ def _declined_then_retry(ctx: ScenarioContext) -> dict:
 
 def _expired_stage(ctx: ScenarioContext) -> dict:
     """A preview left too long. Confirming it is refused, and no order exists."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     customer = ctx.customer(2)
     variant = ctx.variant_with_stock(1, skip=2)
     stage = ctx.stage(customer, variant, 1, key="expired", minutes=-1, correlation=correlation)
@@ -156,7 +164,7 @@ def _expired_stage(ctx: ScenarioContext) -> dict:
 
 def _abandoned_then_released(ctx: ScenarioContext) -> dict:
     """Confirmed, never paid, cancelled — and the held stock comes back."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     customer = ctx.customer(3)
     variant = ctx.variant_with_stock(2, skip=3)
     before = ctx.inventory.sellable(variant)
@@ -174,7 +182,7 @@ def _abandoned_then_released(ctx: ScenarioContext) -> dict:
 
 def _last_unit_contention(ctx: ScenarioContext) -> dict:
     """Two shoppers, one unit. The second confirmation is refused, not oversold."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     variant = f"{SEED_PREFIX}prd_scarce_0_v0"
     # A purpose-built scarce SKU, so the pack does not depend on which generated
     # variant happens to be thin this run.
@@ -216,7 +224,7 @@ def _last_unit_contention(ctx: ScenarioContext) -> dict:
 
 def _provider_mismatch_quarantined(ctx: ScenarioContext) -> dict:
     """A callback claiming the wrong amount. Quarantined, never applied."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     customer = ctx.customer(6)
     variant = ctx.variant_with_stock(2, skip=4)
     stage = ctx.stage(customer, variant, 1, key="mismatch", correlation=correlation)
@@ -229,7 +237,7 @@ def _provider_mismatch_quarantined(ctx: ScenarioContext) -> dict:
                                       link_url="https://rzp.io/m", snapshot={})
     event, _ = ctx.inbox.receive(
         provider="razorpay", provider_event_id="evt_mismatch", event_type="payment_link.paid",
-        payload={"amount": 1, "currency": "INR"})
+        payload={"amount": 1, "currency": "INR"}, correlation=correlation)
     try:
         ctx.checkout.settle_from_provider(
             attempt_id=attempt["id"], provider_reference="plink_mismatch",
@@ -261,7 +269,7 @@ def _webhook_replay_deduplicated(ctx: ScenarioContext) -> dict:
 
 def _incompatible_accessory_blocked(ctx: ScenarioContext) -> dict:
     """A case cut for one handset, checked against another. Refused with the reason."""
-    correlation = Correlation()
+    correlation = ctx.correlation()
     rows = ctx.store.rows(
         "SELECT r.variant_id, r.value_text, r.explanation FROM variant_requirements r "
         "WHERE r.capability_id=? ORDER BY r.variant_id LIMIT 1",
@@ -333,4 +341,10 @@ def install_scenarios(store: Store, world: GeneratedWorld, *,
     context = ScenarioContext(
         store=store, world=world, checkout=checkout, inventory=inventory, ledger=ledger,
         inbox=Inbox(store), as_of=as_of or datetime(2026, 9, 4, tzinfo=UTC))
-    return {pack.key: pack.build(context) for pack in SCENARIOS}
+    results = {}
+    for pack in SCENARIOS:
+        # Named rather than generated, so the demo run a judge selects is the story
+        # they were pointed at: `scenario:golden_purchase`, not an opaque id.
+        context.demo_run_id = f"scenario:{pack.key}"
+        results[pack.key] = {**pack.build(context), "demo_run_id": context.demo_run_id}
+    return results

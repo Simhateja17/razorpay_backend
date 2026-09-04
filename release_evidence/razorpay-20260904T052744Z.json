@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "gate": "razorpay",
+  "status": "passed",
+  "started_at": "2026-09-04T05:27:44.857830+00:00",
+  "finished_at": "2026-09-04T05:28:05.066613+00:00",
+  "claim": {
+    "key": "gate_pass_rate",
+    "value": 1.0,
+    "unit": "ratio",
+    "claim_kind": "observed",
+    "basis": "completed gate commands / required gate commands",
+    "inputs": {
+      "completed": 1,
+      "required": 1
+    },
+    "limitations": []
+  },
+  "correlation_ids": [],
+  "reason": null,
+  "commands": [
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase5_live.py",
+      "--razorpay"
+    ]
+  ],
+  "output": [
+    "connected to supabase\n\nprobe variant sd_prd_air_purifier_0_v0 at 899900 paise\n\n  ok  confirmation creates one pending order\n  ok  confirmation is not paid\n  ok  confirmation reserves stock\n  ok  order is labelled live_app\n  ok  a payment link was attached\n  ok  a verified webhook pays the order\n  ok  the order reads as paid\n  ok  the hold became a sale\n  ok  inventory reconciles\n  ok  a redelivered webhook is a duplicate\n  ok  the redelivery produced no second payment event\n  ok  short payment is quarantined\n  ok  wrong currency is quarantined\n  ok  unknown reference is quarantined\n  ok  no false paid state\n  ok  a redirect reaches only verification-pending\n  ok  a redirect is not payment\n  ok  a decline settles the attempt\n  ok  a decline leaves the order unpaid and retryable\n  ok  a retry is a new attempt, not a new order\n  ok  expiry cancels the abandoned order\n  ok  expiry returns the units\n  ok  inventory still reconciles after expiry\n  ok  a late paid event for a cancelled order is quarantined\n  ok  the cancelled order is still not paid\n  ok  an expired preview creates no order\n\nrazorpay test mode:\n  ok  razorpay returns a usable test-mode link\n  ok  the link is for the amount we asked for\n      received a test-mode short URL (redacted)\n\ncleanup complete\n\n28 live checks passed against Postgres\n"
+  ]
+}

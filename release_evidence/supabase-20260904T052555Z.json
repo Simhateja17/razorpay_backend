@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "gate": "supabase",
+  "status": "failed",
+  "started_at": "2026-09-04T05:25:55.531713+00:00",
+  "finished_at": "2026-09-04T05:25:55.583481+00:00",
+  "claim": {
+    "key": "gate_pass_rate",
+    "value": 0.0,
+    "unit": "ratio",
+    "claim_kind": "observed",
+    "basis": "completed gate commands / required gate commands",
+    "inputs": {
+      "completed": 0,
+      "required": 3
+    },
+    "limitations": [
+      "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python scripts/verify_phase5_live.py"
+    ]
+  },
+  "correlation_ids": [],
+  "reason": "command exited 1: /Users/teja/Razorpay_Buildathon/backend/.venv/bin/python scripts/verify_phase5_live.py",
+  "commands": [
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase5_live.py"
+    ],
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase6_live.py"
+    ],
+    [
+      "/Users/teja/Razorpay_Buildathon/backend/.venv/bin/python",
+      "scripts/verify_phase7_live.py"
+    ]
+  ],
+  "output": [
+    "Traceback (most recent call last):\n  File \"/Users/teja/Razorpay_Buildathon/backend/scripts/verify_phase5_live.py\", line 30, in <module>\n    from marketplace_backend.checkout import CheckoutRepository  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'marketplace_backend'\n"
+  ]
+}

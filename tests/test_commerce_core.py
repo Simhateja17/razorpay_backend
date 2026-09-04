@@ -342,16 +342,21 @@ def test_one_order_gets_one_live_attempt(core):
     assert len(core["store"].rows("SELECT id FROM outbox_messages")) == 1
 
 
-def test_the_outbox_carries_the_order_as_its_idempotency_key(core):
+def test_the_outbox_carries_the_attempt_as_its_idempotency_key(core):
+    """Keyed on the attempt, not just the order: a redelivery of one attempt's
+    message cannot double-create its link, but a genuinely new attempt (a retry
+    after a decline) gets its own key and its own link, rather than recovering a
+    link Razorpay may have already cancelled or expired."""
     core["inventory"].receive("var-1", "loc-blr", 5)
     stage = stage_for(core)
     order = core["checkout"].confirm(stage_id=stage["id"], customer_id=ALICE,
                                      current_cart_state_version=1)
-    core["checkout"].open_attempt(order_id=order["id"], customer_id=ALICE)
+    attempt = core["checkout"].open_attempt(order_id=order["id"], customer_id=ALICE)
 
     message = core["store"].rows("SELECT topic,payload FROM outbox_messages")[0]
     assert message["topic"] == "razorpay.payment_link.create"
-    assert json.loads(message["payload"])["idempotency_key"] == f"order:{order['id']}"
+    assert (json.loads(message["payload"])["idempotency_key"]
+            == f"order:{order['id']}:{attempt['id']}")
 
 
 def test_a_redirect_alone_never_marks_an_order_paid(core):

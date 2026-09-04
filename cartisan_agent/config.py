@@ -108,3 +108,22 @@ class MerchantAgentConfig(CartisanAgentConfig):
     assistant_name: str = "the Cartisan merchant assistant"
     enable_cart: bool = False
     enable_fulfillment: bool = False
+
+    # -- Where approval happens. Named in the prompt so the agent tells the operator
+    # the truth about the surface rather than implying chat can approve anything.
+    approval_surface: str = "the approval queue beside this conversation"
+
+    # -- Grounding. A turn about how the business is doing reads before it describes.
+    performance_grounding_gate: bool = True
+
+    # -- The windows a read defaults to when the operator names none.
+    default_snapshot_days: int = Field(default=7, ge=1, le=90)
+    default_metric_days: int = Field(default=30, ge=1, le=90)
+
+    def absent_tools(self) -> frozenset[str]:
+        names = set(super().absent_tools())
+        # The shopping switches above turn off shopping tools by name; the merchant
+        # surface holds none of them, so nothing extra is removed here. The method is
+        # overridden only so a merchant deployment cannot inherit a cart rule that
+        # would silently drop a merchant tool sharing a name.
+        return frozenset(names)

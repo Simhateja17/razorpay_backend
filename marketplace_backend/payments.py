@@ -51,12 +51,15 @@ class PaymentLinkGateway(Protocol):
 class PaymentLinkDispatcher:
     """Delivers the outbox's link requests. Safe to run repeatedly and concurrently:
     `Outbox.claim` hands one message to one worker, and the provider call carries the
-    internal order id as its `reference_id`, which Razorpay enforces as unique.
+    payment attempt's own id as its `reference_id`, which Razorpay enforces as unique
+    per attempt — so a retry after a decline gets a genuinely new link rather than
+    recovering one the provider may have already cancelled or expired.
 
-    That uniqueness is enforced by *rejecting* a second create, not by returning the
-    first link, so `RazorpayMCPClient.create_payment_link` reads the existing link
-    back on a collision. Either way one order has one link, which is the property
-    that matters here."""
+    That per-attempt uniqueness is enforced by *rejecting* a second create for the
+    same reference, not by returning the first link, so
+    `RazorpayMCPClient.create_payment_link` reads the existing link back on a
+    collision. Either way one attempt has one link, which is the property that
+    matters for a redelivered outbox message."""
 
     topic = "razorpay.payment_link.create"
 
@@ -82,6 +85,20 @@ class PaymentLinkDispatcher:
             results.append(await self._deliver(message))
         return results
 
+    def _correlation_for(self, attempt_id: str, fallback: str | None) -> Correlation:
+        """The journey this delivery belongs to.
+
+        The attempt is the authority — it was written inside the transaction that
+        enqueued this message — and the message's own `correlation_id` is what an
+        attempt predating the lineage columns still has.
+        """
+        rows = self.store.rows(
+            "SELECT correlation_id, demo_run_id FROM payment_attempts WHERE id=?", (attempt_id,))
+        row = rows[0] if rows else {}
+        return Correlation(
+            correlation_id=row.get("correlation_id") or fallback or Correlation().correlation_id,
+            demo_run_id=row.get("demo_run_id"))
+
     def _already_attached(self, attempt_id: str, provider_reference: str) -> bool:
         rows = self.store.rows(
             "SELECT provider_reference FROM payment_attempts WHERE id=?", (attempt_id,))
@@ -90,7 +107,7 @@ class PaymentLinkDispatcher:
     async def _deliver(self, message: dict) -> dict:
         payload = message["payload"]
         attempt_id, order_id = payload["attempt_id"], payload["order_id"]
-        correlation = Correlation(correlation_id=message["correlation_id"] or Correlation().correlation_id)
+        correlation = self._correlation_for(attempt_id, message["correlation_id"])
         try:
             link = await self.gateway.create_payment_link(
                 amount=int(payload["amount_minor"]),
@@ -194,6 +211,19 @@ class WebhookProcessor:
                 f"no payment attempt holds provider reference {reference!r}",
                 correlation,
             )
+
+        # From here the event has a home. It adopts the journey that asked for the
+        # link rather than the one this HTTP request invented, which is what makes the
+        # provider's answer the last step of the customer's story instead of a
+        # free-standing row (ADR 0032). An unmatched event above keeps its own id —
+        # there is genuinely nothing to join it to, and saying so is the honest view.
+        if attempt.get("correlation_id"):
+            correlation = Correlation(
+                correlation_id=attempt["correlation_id"],
+                demo_run_id=attempt.get("demo_run_id"))
+        self.store.execute(
+            "UPDATE inbox_events SET correlation_id=? WHERE id=?",
+            (correlation.correlation_id, row["id"]))
 
         try:
             order = self.checkout.settle_from_provider(

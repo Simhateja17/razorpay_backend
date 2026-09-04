@@ -81,7 +81,10 @@ def test_golden_purchase_reserves_then_consumes_exactly_once(world):
     assert result["order"]["paid"] is False
     assert sellable(world) == before - 1
     assert result["payment"]["pay_url"] == "https://rzp.io/test/1"
-    assert world.gateway.calls == [{"amount": LAPTOP_PRICE, "reference_id": f"order:{order_id}"}]
+    assert world.gateway.calls == [
+        {"amount": LAPTOP_PRICE,
+         "reference_id": f"order:{order_id}:{result['payment']['attempt_id']}"}
+    ]
 
     outcome = world.webhooks.process(
         paid_event(result["payment"]["provider_reference"], LAPTOP_PRICE))
@@ -189,8 +192,9 @@ def test_one_order_never_gets_two_payment_links(world):
 
     again = run(world.service.open_payment(CUSTOMER, order_id))
 
-    # The live attempt is reused rather than replaced, and even if it were not, the
-    # provider is keyed on the internal order id and would return the same link.
+    # The live attempt is reused rather than replaced: a second call while the first
+    # is still `created`/`pending` returns it untouched, so a customer clicking
+    # "checkout" twice in a row cannot end up with two attempts or two links.
     assert again["attempt_id"] == result["payment"]["attempt_id"]
     assert again["pay_url"] == result["payment"]["pay_url"]
     assert len(world.store.rows("SELECT id FROM payment_attempts")) == 1
@@ -356,19 +360,27 @@ def test_a_decline_leaves_one_order_that_can_be_retried(world):
     assert world.inventory.reconcile(LAPTOP)["balanced"]
 
 
-def test_a_retry_reuses_the_providers_link_for_the_same_order(world):
-    """The provider is keyed on the internal order id, so a retry cannot produce a
-    second live link for one order even though it is a second attempt."""
+def test_a_retry_after_decline_gets_its_own_link_not_the_dead_one(world):
+    """The provider is keyed per ATTEMPT, not per order: a retry must get a genuinely
+    new link, because the first one may already be dead at the provider (Razorpay
+    cancels or expires the link itself, not just the payment, for some declines).
+    Reusing the order as the whole key would recover that dead link and hand the
+    customer something that fails the instant they click it."""
     result = buy(world)
     order_id = result["order"]["order_id"]
     world.webhooks.process(paid_event(
         result["payment"]["provider_reference"], LAPTOP_PRICE,
-        event_id="evt_f", event="payment_link.failed"))
+        event_id="evt_f", event="payment_link.cancelled"))
+    assert world.service.order(CUSTOMER, order_id)["attempts"][-1]["status"] == "failed"
 
     retry = run(world.service.open_payment(CUSTOMER, order_id))
 
-    assert {call["reference_id"] for call in world.gateway.calls} == {f"order:{order_id}"}
-    assert retry["pay_url"] == result["payment"]["pay_url"]
+    assert retry["attempt_id"] != result["payment"]["attempt_id"]
+    assert retry["pay_url"] != result["payment"]["pay_url"]
+    assert {call["reference_id"] for call in world.gateway.calls} == {
+        f"order:{order_id}:{result['payment']['attempt_id']}",
+        f"order:{order_id}:{retry['attempt_id']}",
+    }
 
 
 def test_an_expired_reservation_releases_stock_and_cancels_the_order(world):
@@ -608,12 +620,13 @@ def test_a_redelivered_link_request_recovers_the_existing_link(tmp_path):
     result = buy(world)
     order_id = result["order"]["order_id"]
 
-    # Re-enqueue the same request, as a redelivery after a lost response would.
+    # Re-enqueue the same request, as a redelivery after a lost response would —
+    # same attempt, same key `open_attempt` would actually have generated for it.
     world.outbox.enqueue(
         topic=PaymentLinkDispatcher.topic,
         payload={"attempt_id": result["payment"]["attempt_id"], "order_id": order_id,
                  "amount_minor": result["order"]["total_minor"], "currency": "INR",
-                 "idempotency_key": f"order:{order_id}"})
+                 "idempotency_key": f"order:{order_id}:{result['payment']['attempt_id']}"})
     redelivered = run(world.dispatcher.drain())
 
     assert [entry["status"] for entry in redelivered] == ["delivered"]

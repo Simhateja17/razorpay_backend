@@ -60,13 +60,14 @@ class RazorpayMCPClient:
         return json.loads(text)
 
     async def create_payment_link(self, *, amount: int, reference_id: str, description: str) -> dict:
-        """The link for this internal order, creating it only if it does not exist.
+        """The link for this payment attempt, creating it only if it does not exist.
 
-        `reference_id` is the internal order id, and Razorpay enforces that it is
-        unique — but by *rejecting* the second create, not by returning the first
+        `reference_id` identifies one payment attempt (an order's first attempt and
+        its retry after a decline get different ids), and Razorpay enforces that it
+        is unique — but by *rejecting* the second create, not by returning the first
         link. So a redelivered outbox message (a timeout, a crash between the
         provider call and our write) would otherwise fail forever and dead-letter,
-        leaving an order with a live link at the provider and none recorded here.
+        leaving an attempt with a live link at the provider and none recorded here.
         Reading the existing link back is what makes the handoff genuinely
         idempotent, which is what ADR 0011 asks the interface to guarantee.
         """

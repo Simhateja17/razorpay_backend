@@ -184,8 +184,14 @@ class Inbox:
         self.store = store
 
     def receive(self, *, provider: str, provider_event_id: str, event_type: str,
-                payload: dict) -> tuple[dict, bool]:
-        """Return (row, is_new). A duplicate returns the original row untouched."""
+                payload: dict, correlation: Correlation | None = None) -> tuple[dict, bool]:
+        """Return (row, is_new). A duplicate returns the original row untouched.
+
+        `correlation` is optional because a live webhook does not know its journey
+        until the payload has been matched to an attempt; the processor sets it then.
+        A caller that already knows — a scenario pack building a story on purpose —
+        passes it here so the stored event joins that story from the start.
+        """
         existing = self.store.rows(
             "SELECT * FROM inbox_events WHERE provider=? AND provider_event_id=?",
             (provider, provider_event_id))
@@ -194,9 +200,10 @@ class Inbox:
         row_id = _id("in")
         try:
             self.store.execute(
-                "INSERT INTO inbox_events (id,provider,provider_event_id,event_type,payload,status,received_at) "
-                "VALUES (?,?,?,?,?,'received',?)",
-                (row_id, provider, provider_event_id, event_type, json.dumps(payload), _now()))
+                "INSERT INTO inbox_events (id,provider,provider_event_id,event_type,payload,"
+                "status,correlation_id,received_at) VALUES (?,?,?,?,?,'received',?,?)",
+                (row_id, provider, provider_event_id, event_type, json.dumps(payload),
+                 correlation.correlation_id if correlation else None, _now()))
         except Exception:
             # Lost a race with a concurrent delivery of the same event; the winner's
             # row is the one row that exists, which is exactly the intended outcome.

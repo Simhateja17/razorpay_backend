@@ -135,7 +135,12 @@ OUTBOX = _machine("outbox_message", "pending", {
     # parked in `dead_letter` for a human.
     "failed": {"pending", "dead_letter"},
     "delivered": set(),
-    "dead_letter": set(),
+    # A parked message is not the end of the story. A host — never a model — can
+    # return it to the queue once whatever made it fail has been dealt with, which
+    # is what makes a payment-link failure recoverable rather than terminal
+    # (ADR 0030). Delivery itself stays idempotent per attempt, so a requeue cannot
+    # produce a second link for the same attempt.
+    "dead_letter": {"pending"},
 })
 
 INBOX = _machine("inbox_event", "received", {

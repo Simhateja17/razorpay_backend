@@ -367,6 +367,41 @@ def test_customer_can_list_only_their_storefront_conversations(monkeypatch, worl
     ]
 
 
+def test_operator_can_list_only_their_merchant_conversations(monkeypatch, world):
+    import api.main as api_main
+
+    api_main.app.dependency_overrides.clear()
+    monkeypatch.setattr(api_main, "db", world.store)
+    api_main.app.dependency_overrides[api_main.require_operator] = lambda: Principal(
+        id=BOB, email="ops@example.test", role="merchant_operator")
+
+    world.store.execute(
+        "INSERT INTO conversations (id,principal_id,surface,created_at) VALUES (?,?,?,?)",
+        (f"{BOB}:merchant-chat", BOB, "merchant", "2026-09-04T14:00:00+00:00"),
+    )
+    world.store.execute(
+        "INSERT INTO turns (id,conversation_id,sequence,state,user_message,agent_message,"
+        "prompt_version,tool_contract_version,skill_versions,started_at,completed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "turn_operator_chat", f"{BOB}:merchant-chat", 0, "completed",
+            "How are sales looking?", "The store is healthy.", "prompt", "tools", "[]",
+            "2026-09-04T14:00:00+00:00", "2026-09-04T14:00:00+00:00",
+        ),
+    )
+    world.store.execute(
+        "INSERT INTO conversations (id,principal_id,surface,created_at) VALUES (?,?,?,?)",
+        (f"{ALICE}:shopping-chat", ALICE, "shopping", "2026-09-04T15:00:00+00:00"),
+    )
+
+    response = TestClient(api_main.app).get("/chat/portal/conversations")
+
+    assert response.status_code == 200
+    assert response.json()[0]["conversation_id"] == "merchant-chat"
+    assert response.json()[0]["title"] == "How are sales looking?"
+    assert len(response.json()) == 1
+
+
 def test_a_customer_cannot_use_the_merchant_endpoints(monkeypatch, world):
     """The mirror of the test above. Phase 6 put the whole merchant surface behind an
     operator principal, so a signed-in shopper reaches none of it."""
@@ -379,6 +414,7 @@ def test_a_customer_cannot_use_the_merchant_endpoints(monkeypatch, world):
     headers = {"Authorization": "Bearer t"}
     assert client.get("/portal/changes", headers=headers).status_code == 403
     assert client.get("/portal/snapshot", headers=headers).status_code == 403
+    assert client.get("/chat/portal/conversations", headers=headers).status_code == 403
     assert client.post("/chat/portal", headers=headers,
                        json={"conversation_id": "c", "message": "hi"}).status_code == 403
 

@@ -259,6 +259,31 @@ def _public_conversation_id(principal: Principal, conversation_key: str) -> str:
     return conversation_key.removeprefix(prefix)
 
 
+def _conversation_summaries(principal: Principal, surface: str, limit: int) -> list[dict]:
+    rows = db.rows(
+        "SELECT c.id AS conversation_key, c.created_at, COUNT(t.id) AS turn_count, "
+        "MAX(COALESCE(t.completed_at,t.started_at,c.created_at)) AS updated_at, "
+        "(SELECT t2.user_message FROM turns t2 "
+        "WHERE t2.conversation_id=c.id AND t2.user_message IS NOT NULL "
+        "ORDER BY t2.sequence ASC LIMIT 1) AS title "
+        "FROM conversations c LEFT JOIN turns t ON t.conversation_id=c.id "
+        "WHERE c.principal_id=? AND c.surface=? "
+        "GROUP BY c.id,c.created_at "
+        "ORDER BY updated_at DESC,c.created_at DESC LIMIT ?",
+        (principal.id, surface, max(1, min(limit, 100))),
+    )
+    return [
+        {
+            "conversation_id": _public_conversation_id(principal, row["conversation_key"]),
+            "title": row["title"],
+            "turn_count": int(row["turn_count"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
 @app.post("/chat/storefront")
 async def storefront_chat(body: ChatRequest, principal: Principal = Depends(require_customer),
                           correlation: Correlation = Depends(request_correlation)):
@@ -299,28 +324,7 @@ def storefront_conversations(limit: int = 50,
     response removes that internal namespace before returning them, while the
     principal filter ensures the client cannot discover another customer's chats.
     """
-    rows = db.rows(
-        "SELECT c.id AS conversation_key, c.created_at, COUNT(t.id) AS turn_count, "
-        "MAX(COALESCE(t.completed_at,t.started_at,c.created_at)) AS updated_at, "
-        "(SELECT t2.user_message FROM turns t2 "
-        "WHERE t2.conversation_id=c.id AND t2.user_message IS NOT NULL "
-        "ORDER BY t2.sequence ASC LIMIT 1) AS title "
-        "FROM conversations c LEFT JOIN turns t ON t.conversation_id=c.id "
-        "WHERE c.principal_id=? AND c.surface='shopping' "
-        "GROUP BY c.id,c.created_at "
-        "ORDER BY updated_at DESC,c.created_at DESC LIMIT ?",
-        (principal.id, max(1, min(limit, 100))),
-    )
-    return [
-        {
-            "conversation_id": _public_conversation_id(principal, row["conversation_key"]),
-            "title": row["title"],
-            "turn_count": int(row["turn_count"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-        for row in rows
-    ]
+    return _conversation_summaries(principal, "shopping", limit)
 
 
 @app.get("/chat/storefront/resume")
@@ -336,6 +340,13 @@ def storefront_resume(conversation_id: str, principal: Principal = Depends(requi
     key = _conversation_key(principal, conversation_id)
     resumed = turn_store.resume(key) or {"state": "idle", "turn_id": None, "agent_message": None}
     return {**resumed, "history": turn_store.history(key)}
+
+
+@app.get("/chat/portal/conversations")
+def portal_conversations(limit: int = 50,
+                         principal: Principal = Depends(require_operator)):
+    """List this operator's durable merchant conversations, newest first."""
+    return _conversation_summaries(principal, "merchant", limit)
 
 
 @app.post("/chat/portal")

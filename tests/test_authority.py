@@ -305,7 +305,66 @@ def test_merchant_operator_cannot_use_customer_endpoints(monkeypatch, world):
         id=BOB, email="ops@example.test", role="merchant_operator"))
 
     client = TestClient(api_main.app)
-    assert client.get("/cart", headers={"Authorization": "Bearer t"}).status_code == 403
+    headers = {"Authorization": "Bearer t"}
+    assert client.get("/cart", headers=headers).status_code == 403
+    assert client.get("/chat/storefront/conversations", headers=headers).status_code == 403
+
+
+def test_customer_can_list_only_their_storefront_conversations(monkeypatch, world):
+    """Chat history is scoped by the verified customer and the shopping surface."""
+    client, _ = client_for(monkeypatch, world, ALICE)
+
+    def add_conversation(conversation_id, principal_id, surface, started_at, message):
+        world.store.execute(
+            "INSERT INTO conversations (id,principal_id,surface,created_at) VALUES (?,?,?,?)",
+            (conversation_id, principal_id, surface, started_at),
+        )
+        world.store.execute(
+            "INSERT INTO turns (id,conversation_id,sequence,state,user_message,agent_message,"
+            "prompt_version,tool_contract_version,skill_versions,started_at,completed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"turn_{conversation_id}", conversation_id, 0, "completed", message,
+                "Grounded reply", "prompt", "tools", "[]", started_at, started_at,
+            ),
+        )
+
+    add_conversation(
+        f"{ALICE}:chat-old", ALICE, "shopping", "2026-09-04T10:00:00+00:00",
+        "Show me chargers",
+    )
+    add_conversation(
+        f"{ALICE}:chat-new", ALICE, "shopping", "2026-09-04T11:00:00+00:00",
+        "Find a laptop",
+    )
+    add_conversation(
+        f"{ALICE}:merchant", ALICE, "merchant", "2026-09-04T12:00:00+00:00",
+        "Show the sales snapshot",
+    )
+    add_conversation(
+        f"{BOB}:chat-private", BOB, "shopping", "2026-09-04T13:00:00+00:00",
+        "Show Bob's cart",
+    )
+
+    response = client.get("/chat/storefront/conversations")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "conversation_id": "chat-new",
+            "title": "Find a laptop",
+            "turn_count": 1,
+            "created_at": "2026-09-04T11:00:00+00:00",
+            "updated_at": "2026-09-04T11:00:00+00:00",
+        },
+        {
+            "conversation_id": "chat-old",
+            "title": "Show me chargers",
+            "turn_count": 1,
+            "created_at": "2026-09-04T10:00:00+00:00",
+            "updated_at": "2026-09-04T10:00:00+00:00",
+        },
+    ]
 
 
 def test_a_customer_cannot_use_the_merchant_endpoints(monkeypatch, world):

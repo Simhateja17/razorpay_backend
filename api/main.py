@@ -253,6 +253,12 @@ def _conversation_key(principal: Principal, conversation_id: str) -> str:
     return f"{principal.id}:{conversation_id}"
 
 
+def _public_conversation_id(principal: Principal, conversation_key: str) -> str:
+    """Return the client-side id without exposing the principal namespace."""
+    prefix = f"{principal.id}:"
+    return conversation_key.removeprefix(prefix)
+
+
 @app.post("/chat/storefront")
 async def storefront_chat(body: ChatRequest, principal: Principal = Depends(require_customer),
                           correlation: Correlation = Depends(request_correlation)):
@@ -282,6 +288,39 @@ async def storefront_chat(body: ChatRequest, principal: Principal = Depends(requ
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers=_lineage_headers(correlation))
+
+
+@app.get("/chat/storefront/conversations")
+def storefront_conversations(limit: int = 50,
+                             principal: Principal = Depends(require_customer)):
+    """List this customer's durable shopping conversations, newest first.
+
+    Conversation ids are namespaced by the verified principal in storage. The
+    response removes that internal namespace before returning them, while the
+    principal filter ensures the client cannot discover another customer's chats.
+    """
+    rows = db.rows(
+        "SELECT c.id AS conversation_key, c.created_at, COUNT(t.id) AS turn_count, "
+        "MAX(COALESCE(t.completed_at,t.started_at,c.created_at)) AS updated_at, "
+        "(SELECT t2.user_message FROM turns t2 "
+        "WHERE t2.conversation_id=c.id AND t2.user_message IS NOT NULL "
+        "ORDER BY t2.sequence ASC LIMIT 1) AS title "
+        "FROM conversations c LEFT JOIN turns t ON t.conversation_id=c.id "
+        "WHERE c.principal_id=? AND c.surface='shopping' "
+        "GROUP BY c.id,c.created_at "
+        "ORDER BY updated_at DESC,c.created_at DESC LIMIT ?",
+        (principal.id, max(1, min(limit, 100))),
+    )
+    return [
+        {
+            "conversation_id": _public_conversation_id(principal, row["conversation_key"]),
+            "title": row["title"],
+            "turn_count": int(row["turn_count"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
 
 
 @app.get("/chat/storefront/resume")

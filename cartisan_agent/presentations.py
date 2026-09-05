@@ -307,6 +307,7 @@ async def _enrich_products(payload: ProductsPayload, context: EnrichmentContext)
     _state(context).issued_items.update(
         {card["item_ref"]: card["variant_id"] for card in cards}
     )
+    _state(context).last_presented_variant_ids = [card["variant_id"] for card in cards]
     # The references have to reach the model, not just the host: they are what a later
     # add_to_cart names. That costs this round its clean close — a presenting round with
     # a note does not end the turn on its own — and the trade is deliberate, because the
@@ -366,6 +367,7 @@ async def _enrich_comparison(
     _state(context).issued_items.update(
         {entry["item_ref"]: entry["variant_id"] for entry in entries}
     )
+    _state(context).last_presented_variant_ids = [entry["variant_id"] for entry in entries]
     context.notes.append(
         "Entries issued: "
         + "; ".join(f"{entry['variant_id']} -> {entry['item_ref']}" for entry in entries)

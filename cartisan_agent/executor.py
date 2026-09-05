@@ -183,6 +183,28 @@ class CartisanToolExecutor(BaseToolExecutor):
             if tool_input.get("filters")
             else None
         )
+        comparison_anchor = None
+        anchor_id = self._state.cheaper_anchor_variant_id
+        anchor = self._state.seen_variants.get(anchor_id) if anchor_id else None
+        if anchor is not None:
+            # "Cheaper than this" is a strict catalogue constraint, not prompt advice.
+            # Preserve any narrower ceiling the model supplied, but never let an
+            # omitted or looser filter support a false claim that no cheaper item exists.
+            filters = filters or SearchFilters()
+            strict_ceiling = max(0, anchor.price_minor - 1)
+            filters.max_price_minor = min(
+                filters.max_price_minor
+                if filters.max_price_minor is not None
+                else strict_ceiling,
+                strict_ceiling,
+            )
+            filters.sort = "price_asc"
+            comparison_anchor = {
+                "variant_id": anchor.variant_id,
+                "title": anchor.title,
+                "price_minor": anchor.price_minor,
+                "price": anchor.price,
+            }
         variants = await self.port.search_products(
             self._session, query, filters, self._search_limit(tool_input.get("limit"))
         )
@@ -196,6 +218,7 @@ class CartisanToolExecutor(BaseToolExecutor):
         return self._fenced(
             {
                 "query": query,
+                "comparison_anchor": comparison_anchor,
                 "count": len(variants),
                 "results": [_variant_payload(variant) for variant in variants],
             }

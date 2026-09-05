@@ -115,6 +115,44 @@ async def test_a_browse_turn_searches_then_presents(core):
     assert cards[0]["item_ref"].startswith("item_")
 
 
+async def test_a_cheaper_follow_up_enforces_the_presented_items_price_ceiling(core):
+    """A model that forgets the numeric filter must still see the cheaper option.
+
+    This is the exact failure mode from the storefront: the customer refers to the
+    one item just shown as "this", and the model performs a plausible product search
+    but omits the price ceiling before claiming nothing cheaper exists.
+    """
+    store, services = core
+    state = SessionState()
+    messages: list[dict] = []
+    agent = runtime(
+        store,
+        services,
+        [
+            tool_calls_message(("search_products", {"query": "charger"})),
+            tool_calls_message(("present_products", {
+                "picks": [{"variant_id": GOOD_CHARGER, "reason": "The 65 W option."}],
+            }), CHIPS),
+            text_message("Here is the 65 W charger."),
+            tool_calls_message(("search_products", {"query": "charger"}, "tu-cheaper")),
+            text_message("I found the lower-priced option."),
+        ],
+    )
+
+    await run(agent, "show me a charger", state, messages=messages)
+    assert state.last_presented_variant_ids == [GOOD_CHARGER]
+    events, messages = await run(
+        agent, "Is there a product like this at a lower price?", state, messages=messages
+    )
+    assert state.cheaper_anchor_variant_id == GOOD_CHARGER
+
+    payload = _tool_result(messages, "tu-cheaper")
+    assert f'"variant_id": "{WEAK_CHARGER}"' in payload
+    assert payload.count(f'"variant_id": "{GOOD_CHARGER}"') == 1  # the anchor, not a result
+    assert '"count": 1' in payload
+    assert '"comparison_anchor": {' in payload
+
+
 async def test_a_setup_shows_server_calculated_total_and_budget(core):
     store, services = core
     agent = runtime(store, services, [

@@ -221,6 +221,8 @@ class SessionState(BaseModel):
 
     seen_variants: dict[str, Variant] = Field(default_factory=dict)
     issued_items: dict[str, str] = Field(default_factory=dict)  # item_ref -> variant_id
+    last_presented_variant_ids: list[str] = Field(default_factory=list)
+    cheaper_anchor_variant_id: str | None = None
     compatibility_verdicts: dict[str, CompatibilityVerdict] = Field(default_factory=dict)
     checkout_turn: bool = False
 

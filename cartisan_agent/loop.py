@@ -86,6 +86,16 @@ class CartisanShoppingRuntime(AgentRuntime):
         anything at all (ADR 0021). It pins the first round and, through the gate in
         the executor, closes search and cart mutation for the whole turn."""
         state.checkout_turn = is_checkout_turn(self.config, user_text)
+        lowered = user_text.lower()
+        asks_for_cheaper = any(
+            cue in lowered
+            for cue in ("cheaper", "lower price", "less expensive", "more affordable")
+        )
+        state.cheaper_anchor_variant_id = (
+            state.last_presented_variant_ids[0]
+            if asks_for_cheaper and len(state.last_presented_variant_ids) == 1
+            else None
+        )
 
     def build_executor(
         self, session: SessionContext, state: SessionState

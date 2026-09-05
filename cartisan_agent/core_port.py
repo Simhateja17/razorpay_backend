@@ -106,8 +106,15 @@ class CoreCommercePort(CommercePort):
                 for form in _term_forms(term):
                     params += [f"%{form}%"] * 4
         if filters.category:
-            clauses.append("lower(c.name) = ?")
-            params.append(filters.category.lower())
+            category_ids = self._resolve_category_ids(filters.category)
+            if category_ids:
+                clauses.append(f"p.category_id IN ({','.join('?' for _ in category_ids)})")
+                params += category_ids
+            # A label with no match in the real taxonomy (a model guessing "Earbuds"
+            # when the category is "Personal Audio") drops the constraint rather than
+            # filtering to nothing: an exact-match miss here used to manufacture an
+            # empty result the model then read as proof the catalogue lacks the item,
+            # even though the free-text query terms already found it.
         if filters.brand:
             clauses.append("lower(p.brand) = ?")
             params.append(filters.brand.lower())
@@ -139,6 +146,22 @@ class CoreCommercePort(CommercePort):
         else:
             scored.sort(key=lambda pair: (-pair[0], pair[1].variant_id))
         return [variant for _, variant in scored[:limit]]
+
+    def _resolve_category_ids(self, category: str) -> list[str]:
+        """Match a `filters.category` label against the real taxonomy by word
+        overlap rather than exact string equality.
+
+        A tool caller sees category names nowhere but in prior search results, so it
+        sometimes guesses one ("Earbuds") that isn't in the taxonomy at all (the real
+        category is "Personal Audio"). Word overlap still resolves an exact name and
+        a plausible partial ("Audio" against "Personal Audio", "Home Audio"), and
+        returns every category that shares a word rather than picking one arbitrarily.
+        """
+        wanted = set(_tokens(category))
+        if not wanted:
+            return []
+        rows = self.store.rows("SELECT id, name FROM catalog_categories")
+        return [row["id"] for row in rows if wanted & set(_tokens(row["name"]))]
 
     async def get_product_details(
         self, session: SessionContext, variant_id: str
@@ -680,10 +703,21 @@ def _term_forms(term: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(forms))
 
 
-def _matches_search_term(term: str, haystack: str) -> bool:
-    """Match complete tokens so `phone` cannot leak through `headphones`."""
+def _matches_search_term(term: str, haystack: str) -> int:
+    """Match complete tokens so `phone` cannot leak through `headphones`, and rank an
+    exact match above one that only landed through the conservative singular fallback.
+
+    Without this split, a query for "earbuds" scores an "Earbud Case" (matching only
+    the stemmed singular "earbud") the same as an actual "Wireless Earbuds" product
+    (matching the term verbatim) — a tie that the id-ordered tiebreak in
+    `search_products` can resolve in the accessory's favor, crowding the real product
+    out of a small result page entirely.
+    """
     words = set(_tokens(haystack))
-    return any(form in words for form in _term_forms(term))
+    forms = _term_forms(term)
+    if forms[0] in words:
+        return 2
+    return 1 if any(form in words for form in forms[1:]) else 0
 
 
 def _spec_value(row: dict) -> str:

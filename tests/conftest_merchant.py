@@ -116,6 +116,12 @@ def build_merchant_store(tmp_path) -> Store:
         "INSERT INTO campaigns (id,name,channel,promotion_id,status,budget_minor,"
         "spend_minor,starts_at) VALUES ('sd_camp_x','Monsoon accessories','email',"
         "'sd_promo_x','running',500000,180000,?)", (_iso(now - timedelta(days=30)),))
+    # A campaign with no promotion behind it: nothing links an order to it, which is
+    # the case where attribution has to read as absent rather than as zero.
+    store.execute(
+        "INSERT INTO campaigns (id,name,channel,promotion_id,status,budget_minor,"
+        "spend_minor,starts_at) VALUES ('sd_camp_y','Brand awareness','display',"
+        "NULL,'running',400000,120000,?)", (_iso(now - timedelta(days=30)),))
     return store
 
 

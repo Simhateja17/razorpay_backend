@@ -564,17 +564,28 @@ async def test_a_digest_after_a_read_carries_the_evidence_it_rests_on(executor):
     assert "net_revenue_minor" in payload["evidence"]["claims_read"]
 
 
-async def test_campaign_attribution_is_reported_as_missing_not_as_zero(executor):
-    """The number a merchant agent is most tempted to invent. Cartisan records no link
-    from an order to a campaign, so there is no figure — and the read says that in
-    words rather than returning a zero the model could quote (ADR 0019)."""
-    outcome = await executor.execute("get_campaign_performance", {})
+async def test_campaign_without_a_promotion_reports_attribution_as_missing_not_zero(executor):
+    """The number a merchant agent is most tempted to invent. A campaign carrying no
+    promotion code has nothing joining an order to it, so there is no figure — and the
+    read says that in words rather than returning a zero the model could quote (ADR 0019)."""
+    outcome = await executor.execute("get_campaign_performance", {"campaign_id": "sd_camp_y"})
     assert not outcome.refused
-    assert "attributed revenue" in outcome.result_text.lower()
-    assert "not recorded anywhere in Cartisan" in outcome.result_text
-    # Spend is observed and real; attribution simply is not a field.
-    assert "180000" in outcome.result_text or "₹1,800" in outcome.result_text
-    assert "attributed_revenue" not in outcome.result_text
+    assert "no attribution at all" in outcome.result_text
+    # Spend is observed and real; attribution simply is not a field for this campaign.
+    assert "120000" in outcome.result_text or "₹1,200" in outcome.result_text
+    assert "campaign_attributed_revenue" not in outcome.result_text
+
+
+async def test_campaign_attribution_counts_redemptions_and_refuses_to_claim_cause(executor):
+    """With a promotion behind the campaign the link is recorded, so a figure is real —
+    including a genuine zero, which is measured rather than missing. What it must never
+    become is a causal claim: Cartisan has no impression or click to support one."""
+    outcome = await executor.execute("get_campaign_performance", {"campaign_id": "sd_camp_x"})
+    assert not outcome.refused
+    assert "campaign_attributed_orders:sd_camp_x" in outcome.result_text
+    assert "redeemed the campaign's promotion" in outcome.result_text
+    assert "Descriptive, not causal" in outcome.result_text
+    assert "lift, or ROI" in outcome.result_text
 
 
 async def test_a_metric_the_event_log_cannot_support_is_unavailable_not_zero(executor):

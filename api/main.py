@@ -626,12 +626,12 @@ def portal_evidence_filters(demo_run_id: str | None = None,
 
 @app.get("/portal/evidence/journeys")
 def portal_journeys(actor_id: str | None = None, demo_run_id: str | None = None,
-                    origin: str | None = None, limit: int = 40,
+                    origin: str | None = None, surface: str | None = None, limit: int = 40,
                     principal: Principal = Depends(require_operator)):
     """One row per lineage: who started it, what it produced, and how it ended."""
     try:
         return evidence_view.journeys(actor_id=actor_id, demo_run_id=demo_run_id,
-                                      origin=origin, limit=limit)
+                                      origin=origin, surface=surface, limit=limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

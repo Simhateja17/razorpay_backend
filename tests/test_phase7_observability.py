@@ -21,7 +21,7 @@ import asyncio
 
 import pytest
 
-from marketplace_backend.evidence import Correlation
+from marketplace_backend.evidence import Actor, Correlation
 from marketplace_backend.recovery import RecoveryRefused, order_recovery_actions
 from marketplace_backend.state_machines import OUTBOX, TransitionError
 
@@ -291,6 +291,25 @@ def test_journeys_list_summarises_by_lineage(world):
     assert rows[0]["correlation_id"] == correlation.correlation_id
     assert rows[0]["records"] >= 4
     assert rows[0]["orders"][0]["status"] == "pending_payment"
+
+
+def test_journeys_can_be_separated_by_customer_and_merchant_surface(world):
+    customer = Correlation(demo_run_id="demo:surfaces")
+    merchant = Correlation(demo_run_id="demo:surfaces")
+    purchase(world, correlation=customer)
+    world.ledger.record(
+        actor=Actor("merchant_operator", "operator-1", "merchant"),
+        action="stage_merchant_change",
+        reason="Operator staged a bounded inventory change",
+        outcome="applied",
+        correlation=merchant,
+    )
+
+    shopping = world.evidence.journeys(demo_run_id="demo:surfaces", surface="shopping")
+    merchant_rows = world.evidence.journeys(demo_run_id="demo:surfaces", surface="merchant")
+
+    assert {row["correlation_id"] for row in shopping} == {customer.correlation_id}
+    assert {row["correlation_id"] for row in merchant_rows} == {merchant.correlation_id}
 
 
 # -- payment recovery ----------------------------------------------------------

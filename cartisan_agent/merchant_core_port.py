@@ -483,35 +483,88 @@ class CoreMerchantPort(MerchantPort):
         clause, params = ("WHERE c.id = ?", (campaign_id,)) if campaign_id else ("", ())
         rows = self.store.rows(
             "SELECT c.id, c.name, c.channel, c.status, c.budget_minor, c.spend_minor, "
+            "c.promotion_id, c.starts_at, c.ends_at, "
             "pr.code AS promotion_code, pr.description AS promotion_description "
             "FROM campaigns c LEFT JOIN promotions pr ON pr.id = c.promotion_id "
             f"{clause} ORDER BY c.id", params)
         results: list[CampaignPerformance] = []
         for row in rows:
             spend, budget = int(row["spend_minor"]), int(row["budget_minor"])
+            claims = [
+                Claim(key=f"campaign_spend:{row['id']}", value=spend, unit="INR paise",
+                      claim_kind=OBSERVED, basis="campaigns.spend_minor as recorded",
+                      inputs={"campaign_id": row["id"], "budget_minor": budget}),
+                Claim(key=f"campaign_budget_used:{row['id']}",
+                      value=round(spend / budget, 4) if budget else None, unit="ratio",
+                      claim_kind=OBSERVED, basis="spend_minor / budget_minor",
+                      inputs={"spend_minor": spend, "budget_minor": budget}),
+            ]
+            limitations = ["Spend and budget are observed."]
+            if row["promotion_id"]:
+                claims.extend(self._redemption_claims(row))
+                limitations.extend([
+                    "Attribution is by redemption, not by exposure: these are orders that "
+                    "redeemed the campaign's promotion code while it ran. Cartisan records "
+                    "no impression or click, so a customer who saw the campaign and bought "
+                    "without the code is not counted, and one who found the code elsewhere "
+                    "is.",
+                    "Descriptive, not causal: it does not claim these orders would not have "
+                    "happened without the campaign. Do not call it incremental revenue, "
+                    "lift, or ROI.",
+                    "Attributed revenue is the whole order total, so a basket that also "
+                    "held items outside the promotion's scope is counted in full.",
+                ])
+            else:
+                limitations.append(
+                    "This campaign carries no promotion code, so nothing links an order to "
+                    "it and attributed orders and revenue are NOT available. Any figure for "
+                    "them would be invented; do not state one.")
             results.append(CampaignPerformance(
                 campaign_id=row["id"], name=row["name"], channel=row["channel"],
                 status=row["status"], budget_minor=budget, spend_minor=spend,
                 promotion_code=row["promotion_code"],
                 promotion_description=row["promotion_description"],
-                claims=[
-                    Claim(key=f"campaign_spend:{row['id']}", value=spend, unit="INR paise",
-                          claim_kind=OBSERVED, basis="campaigns.spend_minor as recorded",
-                          inputs={"campaign_id": row["id"], "budget_minor": budget}),
-                    Claim(key=f"campaign_budget_used:{row['id']}",
-                          value=round(spend / budget, 4) if budget else None, unit="ratio",
-                          claim_kind=OBSERVED, basis="spend_minor / budget_minor",
-                          inputs={"spend_minor": spend, "budget_minor": budget}),
-                ],
-                limitations=[
-                    "Spend and budget are observed. Attributed orders and attributed "
-                    "revenue are NOT available: Cartisan records no link from an order to "
-                    "the campaign that preceded it, so any figure for them would be "
-                    "invented. Do not state one.",
-                    "The campaign carries a promotion code, but an order records only the "
-                    "discount amount, not which promotion produced it.",
-                ]))
+                claims=claims, limitations=limitations))
         return results
+
+    def _redemption_claims(self, campaign: dict) -> list[Claim]:
+        """Orders that redeemed this campaign's promotion inside its own window.
+
+        The window is the campaign's, not an arbitrary trailing period: a redemption
+        before the campaign started belongs to whatever else was running then.
+        """
+        window = "AND o.created_at >= ?" + (" AND o.created_at < ?" if campaign["ends_at"] else "")
+        params: tuple = ((campaign["promotion_id"], campaign["starts_at"], campaign["ends_at"])
+                         if campaign["ends_at"]
+                         else (campaign["promotion_id"], campaign["starts_at"]))
+        paid = self.store.rows(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(o.total_minor),0) AS revenue, "
+            "COALESCE(SUM(o.discount_minor),0) AS discount FROM commerce_orders o "
+            f"WHERE o.promotion_id = ? AND o.status = 'paid' {window}", params)[0]
+        redeemed = int(self.store.rows(
+            "SELECT COUNT(*) AS n FROM commerce_orders o "
+            f"WHERE o.promotion_id = ? {window}", params)[0]["n"])
+        orders, revenue = int(paid["n"]), int(paid["revenue"])
+        window_note = (f"{campaign['starts_at']} to "
+                       f"{campaign['ends_at'] or 'now (campaign still running)'}")
+        shared = {"campaign_id": campaign["id"], "promotion_code": campaign["promotion_code"],
+                  "window": window_note, "orders_redeeming_any_status": redeemed}
+        return [
+            Claim(key=f"campaign_attributed_orders:{campaign['id']}", value=orders, unit="orders",
+                  claim_kind=OBSERVED,
+                  basis="COUNT(paid commerce_orders whose promotion_id is this campaign's "
+                        "promotion, created inside the campaign window)",
+                  inputs=shared),
+            Claim(key=f"campaign_attributed_revenue:{campaign['id']}", value=revenue,
+                  unit="INR paise", claim_kind=OBSERVED,
+                  basis="SUM(total_minor) over those same paid orders",
+                  inputs=shared | {"attributed_orders": orders}),
+            Claim(key=f"campaign_discount_given:{campaign['id']}", value=int(paid["discount"]),
+                  unit="INR paise", claim_kind=OBSERVED,
+                  basis="SUM(discount_minor) over those same paid orders — what the promotion "
+                        "cost in forgone revenue, separate from campaign spend",
+                  inputs=shared | {"spend_minor": int(campaign["spend_minor"])}),
+        ]
 
     # -- staged changes --------------------------------------------------------
 

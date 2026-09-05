@@ -449,12 +449,13 @@ class CommerceGenerator:
     def _promotions_and_campaigns(self) -> None:
         starts = _iso(self.as_of - timedelta(days=HISTORY_DAYS))
         promotions = [
-            (f"{SEED_PREFIX}promo_{code}", code, description, kind, value, minimum, "active",
-             starts, None)
-            for code, description, kind, value, minimum in domain.PROMOTIONS]
+            (f"{SEED_PREFIX}promo_{code}", code, description, kind, value, minimum,
+             f"{SEED_PREFIX}{category}" if category else None, "active", starts, None)
+            for code, description, kind, value, minimum, category in domain.PROMOTIONS]
         self.store.executemany(
             "INSERT INTO promotions (id,code,description,discount_kind,discount_value,"
-            "min_subtotal_minor,status,starts_at,ends_at) VALUES (?,?,?,?,?,?,?,?,?)", promotions)
+            "min_subtotal_minor,category_id,status,starts_at,ends_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)", promotions)
         campaigns = [
             (f"{SEED_PREFIX}camp_{index}", name, channel, f"{SEED_PREFIX}promo_{code}", "running",
              budget, int(budget * self.rng.uniform(0.35, 0.85)), starts, None)
@@ -476,6 +477,11 @@ class CommerceGenerator:
         """
         prices = {row["variant_id"]: row["amount_minor"] for row in
                   self.store.rows("SELECT variant_id,amount_minor FROM variant_prices")}
+        # Which aisle each variant sits in, so a category-scoped promotion can be
+        # applied to the lines it actually covers.
+        categories = {row["id"]: row["category_id"] for row in self.store.rows(
+            "SELECT v.id, p.category_id FROM catalog_variants v "
+            "JOIN catalog_products p ON p.id = v.product_id")}
         stock = {(row["variant_id"], row["location_id"]): row["on_hand"] for row in
                  self.store.rows("SELECT variant_id,location_id,on_hand FROM inventory_levels")}
         sellable = [v for v in variant_ids if any(
@@ -496,7 +502,7 @@ class CommerceGenerator:
             for _ in range(self.rng.randint(base - 2, base + 3)):
                 counter["n"] += 1
                 self._one_journey(day, counter["n"], sellable, customer_ids, prices,
-                                  pairings, buckets)
+                                  categories, pairings, buckets)
 
         inserts = (
             ("conversations", "INSERT INTO conversations (id,principal_id,surface,created_at) VALUES (?,?,?,?)"),
@@ -512,14 +518,14 @@ class CommerceGenerator:
                                 "VALUES (?,?,?,?,?,?,?,?)"),
             ("checkout_stages", "INSERT INTO checkout_stages (id,cart_id,customer_id,cart_state_version,"
                                 "state,currency,subtotal_minor,shipping_minor,tax_minor,discount_minor,"
-                                "total_minor,fulfillment_option,constraints_note,expires_at,created_at,"
-                                "resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+                                "total_minor,promotion_id,fulfillment_option,constraints_note,expires_at,"
+                                "created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
             ("checkout_stage_lines", "INSERT INTO checkout_stage_lines (stage_id,variant_id,quantity,"
                                      "unit_price_minor,amount_minor) VALUES (?,?,?,?,?)"),
             ("commerce_orders", "INSERT INTO commerce_orders (id,customer_id,stage_id,status,currency,"
                                 "subtotal_minor,shipping_minor,tax_minor,discount_minor,total_minor,"
-                                "amount_paid_minor,origin,state_version,created_at,paid_at,cancelled_at) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+                                "amount_paid_minor,promotion_id,origin,state_version,created_at,paid_at,"
+                                "cancelled_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"),
             ("commerce_order_lines", "INSERT INTO commerce_order_lines (id,order_id,variant_id,quantity,"
                                      "unit_price_minor,amount_minor,recommendation_id) VALUES (?,?,?,?,?,?,?)"),
             ("payment_attempts", "INSERT INTO payment_attempts (id,order_id,provider,provider_reference,"
@@ -546,6 +552,33 @@ class CommerceGenerator:
                 self.store.executemany(sql, buckets[name])
                 self.counts.add(name, len(buckets[name]))
 
+    @staticmethod
+    def _redeemed_promotion(
+        lines: list[tuple[str, int]], prices: dict[str, int], categories: dict[str, str]
+    ) -> tuple[str | None, int]:
+        """The promotion this basket qualifies for, and what it takes off.
+
+        A scoped promotion is measured against the lines it covers, not the whole
+        basket: "personal audio above ₹5,000" means ₹5,000 of personal audio. When
+        more than one code qualifies the shopper uses the better one; ties break on
+        code so the choice is reproducible. Returns (None, 0) when nothing qualifies,
+        which is why an order can carry no promotion at all.
+        """
+        best: tuple[str | None, int] = (None, 0)
+        for code, _description, kind, value, minimum, category in domain.PROMOTIONS:
+            covered = sum(
+                prices.get(variant_id, 99900) * quantity
+                for variant_id, quantity in lines
+                if category is None or categories.get(variant_id) == f"{SEED_PREFIX}{category}"
+            )
+            if covered < minimum:
+                continue
+            discount = value if kind == "fixed_minor" else round(covered * value / 100)
+            discount = min(discount, covered)
+            if discount > best[1]:
+                best = (f"{SEED_PREFIX}promo_{code}", discount)
+        return best
+
     def _pairings(self, line_variants: dict[str, list[str]]) -> dict[str, list[str]]:
         """Which variants genuinely complement which, from the domain's own pairings."""
         pairings: dict[str, list[str]] = {}
@@ -561,7 +594,8 @@ class CommerceGenerator:
 
     def _one_journey(self, day: datetime, index: int, sellable: list[str],
                      customer_ids: list[str], prices: dict[str, int],
-                     pairings: dict[str, list[str]], buckets: dict[str, list[tuple]]) -> None:
+                     categories: dict[str, str], pairings: dict[str, list[str]],
+                     buckets: dict[str, list[tuple]]) -> None:
         """One shopper's session: browse, maybe buy, maybe fail, maybe return."""
         rng = self.rng
         customer_id = rng.choice(customer_ids)
@@ -627,14 +661,19 @@ class CommerceGenerator:
         option, shipping, promised_days = domain.FULFILMENT_OPTIONS[
             0 if subtotal >= 200000 else rng.randint(0, 1)]
         tax = round(subtotal * 0.18)
-        discount = 20000 if subtotal >= 200000 and rng.random() < 0.25 else 0
+        # Not every shopper arrives with a code, but the ones who do get a discount
+        # their order genuinely qualifies for, computed from that promotion's own
+        # rule. A discount no promotion explains is a number nothing can attribute.
+        promotion_id, discount = (
+            self._redeemed_promotion(lines, prices, categories)
+            if rng.random() < 0.25 else (None, 0))
         total = subtotal + shipping + tax - discount
 
         stage_id = f"{SEED_PREFIX}stage_{suffix}"
         order_id = f"{SEED_PREFIX}ord_{suffix}"
         buckets["checkout_stages"].append((
             stage_id, f"{SEED_PREFIX}cart_{suffix}", customer_id, 1, "confirmed", domain.CURRENCY,
-            subtotal, shipping, tax, discount, total, option, None,
+            subtotal, shipping, tax, discount, total, promotion_id, option, None,
             _iso(moment + timedelta(minutes=15)), _iso(moment), _iso(moment + timedelta(minutes=2))))
         for variant_id, quantity in lines:
             unit = prices.get(variant_id, 99900)
@@ -649,7 +688,8 @@ class CommerceGenerator:
         cancelled_at = _iso(moment + timedelta(minutes=30)) if cancelled else None
         buckets["commerce_orders"].append((
             order_id, customer_id, stage_id, status, domain.CURRENCY, subtotal, shipping, tax,
-            discount, total, total if paid else 0, "seeded", 1, _iso(moment), paid_at, cancelled_at))
+            discount, total, total if paid else 0, promotion_id, "seeded", 1, _iso(moment),
+            paid_at, cancelled_at))
         buckets["commerce_events"].append((
             f"{SEED_PREFIX}evt_{suffix}_c", _iso(moment), "order_created", "order", order_id,
             customer_id, total, None, "seeded", None, correlation, None))

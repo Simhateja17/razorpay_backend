@@ -123,6 +123,7 @@ class EvidenceView:
         actor_id: str | None = None,
         demo_run_id: str | None = None,
         origin: str | None = None,
+        surface: str | None = None,
         limit: int = 40,
     ) -> list[dict]:
         """One row per lineage: what it did, when, and how it ended.
@@ -144,6 +145,11 @@ class EvidenceView:
                 raise ValueError(f"unknown origin {origin!r}; expected one of {ORIGINS}")
             clauses.append("data_origin=?")
             params.append(origin)
+        if surface:
+            if surface not in SURFACES:
+                raise ValueError(f"unknown surface {surface!r}; expected one of {SURFACES}")
+            clauses.append("surface=?")
+            params.append(surface)
         rows = self.store.rows(
             "SELECT correlation_id, MIN(recorded_at) AS started_at, MAX(recorded_at) AS ended_at, "
             "COUNT(*) AS records, "

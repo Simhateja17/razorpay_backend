@@ -214,6 +214,38 @@ create table if not exists inventory_reservations (
 create index if not exists inventory_reservations_order_idx on inventory_reservations (order_id);
 create index if not exists inventory_reservations_expiry_idx on inventory_reservations (status, expires_at);
 
+-- ============================================ promotions and campaigns
+
+-- Declared before checkout because a stage and an order each name the promotion
+-- that explains their discount.
+create table if not exists promotions (
+  id text primary key,
+  code text not null unique,
+  description text not null,
+  discount_kind text not null check (discount_kind in ('percentage', 'fixed_minor')),
+  discount_value integer not null check (discount_value > 0),
+  min_subtotal_minor integer not null default 0 check (min_subtotal_minor >= 0),
+  -- The category the promotion is confined to; null is storewide. A promotion that
+  -- says "personal audio above ₹5,000" has to be enforceable as written, or the
+  -- description is decoration and the discount it explains is unexplained.
+  category_id text references catalog_categories (id),
+  status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'ended')),
+  starts_at timestamptz not null,
+  ends_at timestamptz
+);
+
+create table if not exists campaigns (
+  id text primary key,
+  name text not null,
+  channel text not null,
+  promotion_id text references promotions (id),
+  status text not null default 'draft' check (status in ('draft', 'running', 'paused', 'ended')),
+  budget_minor integer not null default 0 check (budget_minor >= 0),
+  spend_minor integer not null default 0 check (spend_minor >= 0),
+  starts_at timestamptz not null,
+  ends_at timestamptz
+);
+
 -- =========================================================== checkout
 
 -- An immutable, expiring preview. Staging moves no money and reserves no stock.
@@ -229,6 +261,9 @@ create table if not exists checkout_stages (
   tax_minor integer not null default 0 check (tax_minor >= 0),
   discount_minor integer not null default 0 check (discount_minor >= 0),
   total_minor integer not null check (total_minor >= 0),
+  -- Which promotion produced `discount_minor`, so the discount is explained by a
+  -- rule rather than appearing as a bare number. Null means no promotion applied.
+  promotion_id text references promotions (id),
   fulfillment_option text not null,
   constraints_note text,
   expires_at timestamptz not null,
@@ -262,6 +297,11 @@ create table if not exists commerce_orders (
   discount_minor integer not null default 0 check (discount_minor >= 0),
   total_minor integer not null check (total_minor >= 0),
   amount_paid_minor integer not null default 0 check (amount_paid_minor >= 0),
+  -- The promotion redeemed on this order, carried over from its stage. It is what
+  -- makes campaign attribution a recorded fact rather than an inference: an order
+  -- is attributed to a campaign only through the promotion it actually redeemed.
+  -- Nullable: no promotion, or an order created before this column existed.
+  promotion_id text references promotions (id),
   origin text not null default 'live_app' check (origin in ('seeded', 'live_app', 'razorpay_test')),
   state_version integer not null default 0 check (state_version >= 0),
   -- The lineage the order was created under, so the journey that produced it can be
@@ -275,6 +315,7 @@ create table if not exists commerce_orders (
 );
 
 create index if not exists commerce_orders_correlation_idx on commerce_orders (correlation_id);
+create index if not exists commerce_orders_promotion_idx on commerce_orders (promotion_id, created_at);
 
 create index if not exists commerce_orders_customer_idx on commerce_orders (customer_id, created_at);
 create index if not exists commerce_orders_status_idx on commerce_orders (status, created_at);
@@ -397,32 +438,6 @@ create table if not exists recommendations (
 );
 
 create index if not exists recommendations_customer_idx on recommendations (customer_id, created_at);
-
--- ============================================ promotions and campaigns
-
-create table if not exists promotions (
-  id text primary key,
-  code text not null unique,
-  description text not null,
-  discount_kind text not null check (discount_kind in ('percentage', 'fixed_minor')),
-  discount_value integer not null check (discount_value > 0),
-  min_subtotal_minor integer not null default 0 check (min_subtotal_minor >= 0),
-  status text not null default 'draft' check (status in ('draft', 'active', 'paused', 'ended')),
-  starts_at timestamptz not null,
-  ends_at timestamptz
-);
-
-create table if not exists campaigns (
-  id text primary key,
-  name text not null,
-  channel text not null,
-  promotion_id text references promotions (id),
-  status text not null default 'draft' check (status in ('draft', 'running', 'paused', 'ended')),
-  budget_minor integer not null default 0 check (budget_minor >= 0),
-  spend_minor integer not null default 0 check (spend_minor >= 0),
-  starts_at timestamptz not null,
-  ends_at timestamptz
-);
 
 -- =================================================== commerce events
 

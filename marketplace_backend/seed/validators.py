@@ -169,6 +169,55 @@ def validate_attribution(store: Store) -> InvariantReport:
     return _report("attribution", len(lines), problems)
 
 
+def validate_promotion_redemptions(store: Store) -> InvariantReport:
+    """A recorded redemption must be one the order actually qualified for.
+
+    This is what campaign attribution rests on: an order is attributed to a campaign
+    through the promotion it redeemed, so if the redemption is not real, neither is
+    the attribution. The discount has to equal what the promotion's own rule computes
+    over the lines it covers — a scoped promotion is measured against its own
+    category, which is also what stops "₹500 off personal audio" from being paid out
+    on a keyboard.
+    """
+    problems = []
+    orders = store.rows(
+        "SELECT o.id, o.subtotal_minor, o.discount_minor, pr.code, pr.discount_kind, "
+        "pr.discount_value, pr.min_subtotal_minor, pr.category_id "
+        "FROM commerce_orders o JOIN promotions pr ON pr.id = o.promotion_id")
+    for order in orders:
+        # Branch in Python rather than passing the scope as a nullable parameter:
+        # `? IS NULL` leaves Postgres an untyped parameter it refuses to infer, and
+        # SQLite accepting it is exactly how that stays hidden until a live run.
+        if order["category_id"] is None:
+            covered = int(store.rows(
+                "SELECT COALESCE(SUM(amount_minor),0) AS n FROM commerce_order_lines "
+                "WHERE order_id = ?", (order["id"],))[0]["n"])
+        else:
+            covered = int(store.rows(
+                "SELECT COALESCE(SUM(l.amount_minor),0) AS n FROM commerce_order_lines l "
+                "JOIN catalog_variants v ON v.id = l.variant_id "
+                "JOIN catalog_products p ON p.id = v.product_id "
+                "WHERE l.order_id = ? AND p.category_id = ?",
+                (order["id"], order["category_id"]))[0]["n"])
+        if covered < order["min_subtotal_minor"]:
+            problems.append(
+                f"{order['id']}: redeemed {order['code']} on {covered} of covered lines, "
+                f"below its {order['min_subtotal_minor']} minimum")
+            continue
+        expected = (order["discount_value"] if order["discount_kind"] == "fixed_minor"
+                    else round(covered * order["discount_value"] / 100))
+        expected = min(expected, covered)
+        if order["discount_minor"] != expected:
+            problems.append(
+                f"{order['id']}: discount is {order['discount_minor']} but {order['code']} "
+                f"computes {expected}")
+    unexplained = store.rows(
+        "SELECT id FROM commerce_orders WHERE discount_minor > 0 AND promotion_id IS NULL")
+    for order in unexplained:
+        problems.append(f"{order['id']}: carries a discount no promotion explains")
+    return _report("promotion redemptions", len(orders), problems)
+
+
 def validate_attributed_revenue(store: Store) -> InvariantReport:
     """Agent-assisted revenue counts paid orders only, and nothing else."""
     problems = []
@@ -271,6 +320,7 @@ def validate_all(store: Store) -> list[InvariantReport]:
         validate_inventory(store),
         validate_payments(store),
         validate_attribution(store),
+        validate_promotion_redemptions(store),
         validate_attributed_revenue(store),
         validate_lineage(store),
         validate_origin_labelling(store),

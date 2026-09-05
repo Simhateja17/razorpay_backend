@@ -360,11 +360,17 @@ FULFILMENT_OPTIONS: tuple[tuple[str, int, int], ...] = (
     ("express", 9900, 2),
 )
 
-PROMOTIONS: tuple[tuple[str, str, str, int, int], ...] = (
-    # (code, description, kind, value, min subtotal in paise)
-    ("MONSOON10", "Monsoon sale: 10% off orders above ₹2,000", "percentage", 10, 200000),
-    ("AUDIO500", "₹500 off personal audio above ₹5,000", "fixed_minor", 50000, 500000),
-    ("SMARTHOME15", "15% off smart home above ₹3,000", "percentage", 15, 300000),
+PROMOTIONS: tuple[tuple[str, str, str, int, int, str | None], ...] = (
+    # (code, description, kind, value, min subtotal in paise, category scope)
+    # A promotion has to be enforceable exactly as its description reads: the
+    # category is what confines the audio and smart-home offers to the aisles they
+    # name, and a null scope is genuinely storewide.
+    ("MONSOON10", "Monsoon sale: ₹200 off orders above ₹2,000", "fixed_minor", 20000,
+     200000, None),
+    ("AUDIO500", "₹500 off personal audio above ₹5,000", "fixed_minor", 50000,
+     500000, "cat_audio_personal"),
+    ("SMARTHOME15", "15% off smart home above ₹3,000", "percentage", 15,
+     300000, "cat_smart_home"),
 )
 
 CAMPAIGNS: tuple[tuple[str, str, str, int], ...] = (

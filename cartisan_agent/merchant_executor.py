@@ -410,10 +410,14 @@ class MerchantToolExecutor(BaseToolExecutor):
                     for campaign in campaigns
                 ],
                 "note": (
-                    "Spend and budget are observed. Attributed orders and attributed "
-                    "revenue are not recorded anywhere in Cartisan, so there is no figure "
-                    "for them: say that they are not connected rather than reporting zero, "
-                    "and do not describe a campaign as having caused a change in sales."
+                    "Spend and budget are observed. Attribution is by promotion redemption: "
+                    "an attributed order is one that redeemed this campaign's promotion code "
+                    "inside the campaign's own window, which Cartisan records. It is not "
+                    "recorded anywhere in Cartisan which orders the campaign *caused*: there "
+                    "is no impression or click, so never describe attributed revenue as lift, "
+                    "incremental revenue, ROI, or a change the campaign caused. A campaign "
+                    "with no promotion code has no attribution at all — say the orders are "
+                    "not connected to it rather than reporting zero for it."
                 ),
             }
         )

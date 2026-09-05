@@ -50,6 +50,10 @@ PERFORMANCE_CUES: tuple[str, ...] = (
     "?", "how", "what", "why", "show", "tell", "give", "compare", "since", "last",
     "this", "any", "which",
 )
+DEMAND_TERMS: tuple[str, ...] = (
+    "demand", "requested", "requests", "searching", "searched", "unable", "missing",
+    "couldn't find", "could not find", "not find", "catalog gap", "catalogue gap",
+)
 
 
 def causal_claim_error(what: str) -> str:
@@ -124,7 +128,13 @@ def _performance(
     return {} if fires else None
 
 
+def _demand(config: MerchantAgentConfig, text: str, _: MerchantSessionState) -> dict[str, Any] | None:
+    lowered = text.lower()
+    return {"window_days": 30} if any(term in lowered for term in DEMAND_TERMS) else None
+
+
 MERCHANT_GROUNDING_RULES: tuple[GroundingRule, ...] = (
+    GroundingRule("unmet_demand", "get_unmet_demand", _demand),
     GroundingRule("performance", "get_business_snapshot", _performance),
 )
 

@@ -188,6 +188,7 @@ class CartisanToolExecutor(BaseToolExecutor):
         )
         self._state.remember_variants(variants)
         if not variants:
+            await self.port.record_unmet_demand(self._session, query, filters)
             return ToolOutcome(
                 f"No active catalogue variants matched {query!r}. Nothing was found; do "
                 "not describe an item the catalogue did not return."
@@ -224,6 +225,7 @@ class CartisanToolExecutor(BaseToolExecutor):
             str(tool_input.get("base_variant_id", "")),
             str(tool_input.get("candidate_variant_id", "")),
         )
+        self._state.remember_compatibility(verdict)
         return self._fenced(
             {
                 **verdict.model_dump(),

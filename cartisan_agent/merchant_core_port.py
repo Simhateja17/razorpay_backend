@@ -58,6 +58,7 @@ from .merchant_types import (
     PriceHistoryEntry,
     PricingContext,
     StagedChange,
+    UnmetDemandSignal,
 )
 from .outcomes import BusinessRefusal, Unavailable
 
@@ -400,6 +401,25 @@ class CoreMerchantPort(MerchantPort):
             if len(alerts) >= limit:
                 break
         return alerts
+
+    async def get_unmet_demand(
+        self, session: MerchantSessionContext, window_days: int = 30, limit: int = 10
+    ) -> list[UnmetDemandSignal]:
+        window = _window(window_days)
+        rows = self.store.rows(
+            "SELECT subject_id AS query, COUNT(*) AS requests, "
+            "COUNT(DISTINCT customer_id) AS unique_customers, "
+            "MIN(occurred_at) AS first_seen, MAX(occurred_at) AS last_seen "
+            "FROM commerce_events WHERE event_type='catalog_search_no_results' "
+            "AND origin='live_app' AND occurred_at >= ? GROUP BY subject_id "
+            "ORDER BY requests DESC, last_seen DESC LIMIT ?",
+            (_cutoff(window), max(1, min(limit, 50))),
+        )
+        return [UnmetDemandSignal(
+            query=str(row["query"]), requests=int(row["requests"]),
+            unique_customers=int(row["unique_customers"]), first_seen=str(row["first_seen"]),
+            last_seen=str(row["last_seen"]), window_days=window,
+        ) for row in rows]
 
     async def get_pricing_context(
         self, session: MerchantSessionContext, variant_id: str

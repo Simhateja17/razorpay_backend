@@ -161,6 +161,16 @@ class InventoryAlert(BaseModel):
     days_of_cover: Claim | None = None
 
 
+class UnmetDemandSignal(BaseModel):
+    query: str
+    requests: int
+    unique_customers: int
+    first_seen: str
+    last_seen: str
+    window_days: int
+    origin: str = "live_app"
+
+
 class PriceHistoryEntry(BaseModel):
     amount_minor: int
     price_kind: str

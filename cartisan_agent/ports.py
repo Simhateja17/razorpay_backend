@@ -51,6 +51,12 @@ class CommercePort(ABC):
         """The full record for one variant, or None when the id is unknown."""
 
     @abstractmethod
+    async def record_unmet_demand(
+        self, session: SessionContext, query: str, filters: SearchFilters | None = None
+    ) -> None:
+        """Record a meaningful no-result customer search as an observed commerce event."""
+
+    @abstractmethod
     async def check_compatibility(
         self, session: SessionContext, base_variant_id: str, candidate_variant_id: str
     ) -> CompatibilityVerdict:

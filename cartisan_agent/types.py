@@ -221,8 +221,13 @@ class SessionState(BaseModel):
 
     seen_variants: dict[str, Variant] = Field(default_factory=dict)
     issued_items: dict[str, str] = Field(default_factory=dict)  # item_ref -> variant_id
+    compatibility_verdicts: dict[str, CompatibilityVerdict] = Field(default_factory=dict)
     checkout_turn: bool = False
 
     def remember_variants(self, variants: list[Variant]) -> None:
         for variant in variants:
             remember(self.seen_variants, variant.variant_id, variant)
+
+    def remember_compatibility(self, verdict: CompatibilityVerdict) -> None:
+        key = f"{verdict.base_variant_id}:{verdict.candidate_variant_id}"
+        self.compatibility_verdicts[key] = verdict

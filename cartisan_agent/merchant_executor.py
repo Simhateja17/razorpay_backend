@@ -170,6 +170,7 @@ class MerchantToolExecutor(BaseToolExecutor):
             "search_listings": self._search_listings,
             "get_listing": self._get_listing,
             "get_inventory_alerts": self._get_inventory_alerts,
+            "get_unmet_demand": self._get_unmet_demand,
             "get_pricing_context": self._get_pricing_context,
             "get_campaign_performance": self._get_campaign_performance,
             "get_pending_changes": self._get_pending_changes,
@@ -316,6 +317,22 @@ class MerchantToolExecutor(BaseToolExecutor):
                 ),
             }
         )
+
+    async def _get_unmet_demand(self, tool_input: dict[str, Any]) -> ToolOutcome:
+        window = int(tool_input.get("window_days") or 30)
+        signals = await self.port.get_unmet_demand(
+            self._session, window, clamp_limit(tool_input.get("limit"), 10, 50)
+        )
+        return self._fenced({
+            "window_days": window,
+            "origins": ["live_app"],
+            "signals": [signal.model_dump() for signal in signals],
+            "basis": "Count of authoritative catalog searches that returned no active result, grouped by normalized query.",
+            "limitations": [
+                "A no-result search records unmet interest, not a promised sale.",
+                "Different wording for the same need may appear as separate signals.",
+            ],
+        })
 
     async def _get_pricing_context(self, tool_input: dict[str, Any]) -> ToolOutcome:
         variant_id = str(tool_input.get("variant_id", ""))

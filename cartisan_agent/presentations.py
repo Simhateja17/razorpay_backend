@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import Field
@@ -40,6 +40,7 @@ PROVENANCE_GATE = "provenance"
 REFERENCE_GATE = "presentation_reference"
 CROSS_SELL_GATE = "cross_sell_bound"
 OWNERSHIP_GATE = "ownership"
+SETUP_GATE = "setup_budget"
 
 
 class PresentationLedger:
@@ -137,6 +138,8 @@ class Pick(PresentationPayload):
 class ProductsPayload(PresentationPayload):
     title: str | None = None
     layout: str = "carousel"
+    purpose: Literal["shortlist", "setup"] = "shortlist"
+    budget_minor: int | None = Field(default=None, ge=0)
     picks: list[Pick] = Field(min_length=1, max_length=12)
 
 
@@ -260,6 +263,39 @@ async def _enrich_products(payload: ProductsPayload, context: EnrichmentContext)
                 )
         cards.append({**_card(variant), "reason": pick.reason, "is_cross_sell": pick.is_cross_sell})
 
+    setup_total = sum(card["price_minor"] for card in cards)
+    if payload.purpose == "setup":
+        if payload.budget_minor is None:
+            raise PresentationRefused(
+                "A setup needs the customer's stated total budget so the server can verify the total.",
+                gate=SETUP_GATE,
+            )
+        if cross_sells:
+            raise PresentationRefused("A setup cannot count an optional cross-sell as one of its parts.", gate=SETUP_GATE)
+        if any(not card["in_stock"] for card in cards):
+            raise PresentationRefused("Every product in a setup must currently be in stock.", gate=SETUP_GATE)
+        if setup_total > payload.budget_minor:
+            raise PresentationRefused(
+                f"The setup total {inr(setup_total)} exceeds the customer's "
+                f"{inr(payload.budget_minor)} budget. Present a working set within budget.",
+                gate=SETUP_GATE,
+            )
+        anchor_id = cards[0]["variant_id"]
+        for card in cards[1:]:
+            key = f"{anchor_id}:{card['variant_id']}"
+            verdict = _state(context).compatibility_verdicts.get(key)
+            if verdict is None:
+                raise PresentationRefused(
+                    f"{card['variant_id']} was not checked for compatibility with setup anchor {anchor_id}.",
+                    gate=SETUP_GATE,
+                )
+            if not verdict.compatible:
+                raise PresentationRefused(
+                    f"{card['variant_id']} is not compatible with setup anchor {anchor_id}.",
+                    gate=SETUP_GATE,
+                )
+            card["fit_checks"] = [finding.explanation for finding in verdict.findings if finding.satisfied]
+
     presentation_id, refs = services.presentations.issue(
         session,
         "products",
@@ -284,6 +320,20 @@ async def _enrich_products(payload: ProductsPayload, context: EnrichmentContext)
         "presentation_id": presentation_id,
         "title": payload.title,
         "layout": payload.layout,
+        "purpose": payload.purpose,
+        "budget_minor": payload.budget_minor,
+        "budget": inr(payload.budget_minor) if payload.budget_minor is not None else None,
+        "total_minor": setup_total,
+        "total": inr(setup_total),
+        "remaining_budget_minor": (
+            payload.budget_minor - setup_total
+            if payload.budget_minor is not None else None
+        ),
+        "remaining_budget": (
+            inr(payload.budget_minor - setup_total)
+            if payload.budget_minor is not None and payload.budget_minor >= setup_total
+            else None
+        ),
         "items": cards,
     }
 

@@ -115,6 +115,59 @@ async def test_a_browse_turn_searches_then_presents(core):
     assert cards[0]["item_ref"].startswith("item_")
 
 
+async def test_a_setup_shows_server_calculated_total_and_budget(core):
+    store, services = core
+    agent = runtime(store, services, [
+        tool_calls_message(("search_products", {"query": ""})),
+        tool_calls_message(("check_compatibility", {
+            "base_variant_id": LAPTOP, "candidate_variant_id": GOOD_CHARGER,
+        })),
+        tool_calls_message(("present_products", {
+            "purpose": "setup", "budget_minor": 1_200_000,
+            "picks": [
+                {"variant_id": LAPTOP, "reason": "The anchor device."},
+                {"variant_id": GOOD_CHARGER, "reason": "Meets the recorded 65 W requirement."},
+            ],
+        }), CHIPS),
+        text_message("This setup fits the stated budget."),
+    ])
+    events, _ = await run(agent, "Build a setup under ₹12,000", SessionState())
+    payload = ui(events, "products")
+    assert payload["purpose"] == "setup"
+    assert payload["total_minor"] == 1_099_800
+    assert payload["remaining_budget_minor"] == 100_200
+    assert payload["remaining_budget"] == "₹1,002"
+
+
+async def test_an_over_budget_setup_is_blocked(core):
+    store, services = core
+    agent = runtime(store, services, [
+        tool_calls_message(("search_products", {"query": ""})),
+        tool_calls_message(("present_products", {
+            "purpose": "setup", "budget_minor": 1_000_000,
+            "picks": [{"variant_id": LAPTOP}, {"variant_id": GOOD_CHARGER}],
+        })),
+        text_message("That combination exceeds the budget."),
+    ])
+    events, _ = await run(agent, "Build a setup under ₹10,000", SessionState())
+    held = results(events)["present_products"]
+    assert held["status"] == "blocked"
+    assert "exceeds" in held["summary"]
+
+
+async def test_a_no_result_search_records_live_unmet_demand(core):
+    store, services = core
+    agent = runtime(store, services, [
+        tool_calls_message(("search_products", {"query": "television"})),
+        text_message("Cartisan has no matching active product."),
+    ])
+    await run(agent, "Do you have a television?", SessionState())
+    row = store.rows("SELECT * FROM commerce_events WHERE event_type='catalog_search_no_results'")[0]
+    assert row["subject_id"] == "television"
+    assert row["customer_id"] == CUSTOMER
+    assert row["origin"] == "live_app"
+
+
 async def test_a_broad_catalogue_question_forces_search_first(core):
     """The retailer description is not evidence that a category is stocked."""
     store, services = core

@@ -20,6 +20,7 @@ from typing import Any
 
 from marketplace_backend.carts import ConflictError, IdempotencyLedger
 from marketplace_backend.checkout import CheckoutRepository
+from marketplace_backend.evidence import CommerceEventLog
 from marketplace_backend.store import Store
 from marketplace_backend.timeutil import now as iso_now
 
@@ -75,6 +76,7 @@ class CoreCommercePort(CommercePort):
         self.checkout = checkout
         self.config = config or CartisanAgentConfig()
         self.idempotency = IdempotencyLedger(store)
+        self.events = CommerceEventLog(store)
 
     # -- catalogue ------------------------------------------------------------
 
@@ -146,6 +148,20 @@ class CoreCommercePort(CommercePort):
         else:
             scored.sort(key=lambda pair: (-pair[0], pair[1].variant_id))
         return [variant for _, variant in scored[:limit]]
+
+    async def record_unmet_demand(
+        self, session: SessionContext, query: str, filters: SearchFilters | None = None
+    ) -> None:
+        normalized = " ".join(_tokens(query))[:160]
+        if not normalized:
+            return
+        applied = filters or SearchFilters()
+        self.events.append(
+            event_type="catalog_search_no_results", subject_type="catalog_query",
+            subject_id=normalized, customer_id=session.customer_id, origin="live_app",
+            correlation=session.correlation(),
+            detail={"query": normalized, "filters": applied.model_dump(exclude_none=True)},
+        )
 
     def _resolve_category_ids(self, category: str) -> list[str]:
         """Match a `filters.category` label against the real taxonomy by word

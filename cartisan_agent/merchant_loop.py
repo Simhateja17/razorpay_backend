@@ -124,7 +124,7 @@ class CartisanMerchantRuntime(AgentRuntime):
             return "catalog_product"
         if name in {"get_pricing_context", "get_inventory_alerts"}:
             return "catalog_variant"
-        if name in {"get_business_snapshot", "query_metrics", "present_metrics", "present_digest"}:
+        if name in {"get_business_snapshot", "query_metrics", "get_unmet_demand", "present_metrics", "present_digest"}:
             return "metrics"
         if name == "get_campaign_performance":
             return "campaign"

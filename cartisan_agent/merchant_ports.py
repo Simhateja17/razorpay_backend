@@ -25,6 +25,7 @@ from .merchant_types import (
     MetricSeries,
     PricingContext,
     StagedChange,
+    UnmetDemandSignal,
 )
 
 
@@ -68,6 +69,12 @@ class MerchantPort(ABC):
         self, session: MerchantSessionContext, limit: int = 10
     ) -> list[InventoryAlert]:
         """Variants at or below cover, with the observed sales rate behind each one."""
+
+    @abstractmethod
+    async def get_unmet_demand(
+        self, session: MerchantSessionContext, window_days: int = 30, limit: int = 10
+    ) -> list[UnmetDemandSignal]:
+        """Observed customer searches that returned no active catalogue result."""
 
     @abstractmethod
     async def get_pricing_context(

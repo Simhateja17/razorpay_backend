@@ -42,7 +42,7 @@ SHOPPING_PRESENTATION: tuple[str, ...] = (
 )
 MERCHANT_READS: tuple[str, ...] = (
     "get_business_snapshot", "query_metrics", "search_listings", "get_listing",
-    "get_inventory_alerts", "get_pricing_context", "get_campaign_performance",
+    "get_inventory_alerts", "get_unmet_demand", "get_pricing_context", "get_campaign_performance",
     "get_pending_changes", "load_skill",
 )
 MERCHANT_STAGING: tuple[str, ...] = (
@@ -409,6 +409,14 @@ def build_shopping_tools(
                         "Card layout; carousel when omitted.",
                         enum=["carousel", "grid", "list"],
                     ),
+                    "purpose": _string(
+                        "Use setup only when every card is one chosen part of a complete goal-based setup.",
+                        enum=["shortlist", "setup"],
+                    ),
+                    "budget_minor": {
+                        "type": "integer", "minimum": 0,
+                        "description": "The customer's stated total setup budget in paise. Required for purpose=setup.",
+                    },
                     "picks": {
                         "type": "array",
                         "minItems": 1,
@@ -655,6 +663,18 @@ def build_merchant_tools(
             "input_schema": _object(
                 {"limit": {"type": "integer", "minimum": 1, "maximum": 50}}
             ),
+        },
+        {
+            "name": "get_unmet_demand",
+            "description": (
+                "Observed live shopper searches that returned no active catalog result, "
+                "grouped by query with request and unique-customer counts. Read this before "
+                "claiming shoppers want something the store does not currently offer."
+            ),
+            "input_schema": _object({
+                "window_days": {"type": "integer", "minimum": 1, "maximum": 90},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            }),
         },
         {
             "name": "get_pricing_context",

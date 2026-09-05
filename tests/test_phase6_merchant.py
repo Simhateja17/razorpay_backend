@@ -28,6 +28,7 @@ from __future__ import annotations
 import pytest
 
 from marketplace_backend.merchant import DecisionRefused
+from marketplace_backend.evidence import CommerceEventLog, Correlation
 from marketplace_backend.merchant_changes import (
     POLICY_BOUNDS,
     PolicyViolation,
@@ -120,6 +121,19 @@ def test_the_merchant_surface_offers_no_way_to_apply_or_approve():
     }
     # Every write on this surface is a staging, by name and by contract.
     assert all(name.startswith("stage_") for name in MERCHANT_STAGING)
+
+
+async def test_unmet_demand_aggregates_observed_live_searches(world):
+    events = CommerceEventLog(world.store)
+    for customer in ("shopper-a", "shopper-a", "shopper-b"):
+        events.append(event_type="catalog_search_no_results", subject_type="catalog_query",
+                      subject_id="usb c adapter", customer_id=customer, origin="live_app",
+                      correlation=Correlation())
+    signals = await world.port.get_unmet_demand(merchant_session(), window_days=30)
+    assert signals[0].query == "usb c adapter"
+    assert signals[0].requests == 3
+    assert signals[0].unique_customers == 2
+    assert signals[0].origin == "live_app"
 
 
 @pytest.mark.parametrize("name", sorted(FORBIDDEN_TOOLS))

@@ -373,26 +373,46 @@ class CoreMerchantPort(MerchantPort):
         self, session: MerchantSessionContext, limit: int = 10
     ) -> list[InventoryAlert]:
         window = 30
+        placeholders = ",".join("?" for _ in self.origins)
+        # Ranked by cover, not by raw stock. Ordering on `sellable` alone reads the
+        # wrong quantity: it puts every dead item with two units on the shelf ahead
+        # of a fast mover with sixty, and a fast mover past the cut-off is never even
+        # read, so the alert can come back empty while a real stockout is days away.
+        # Cover is the criterion the loop below tests, so it is the criterion the
+        # candidates are ordered by. Variants with no sales in the window are excluded
+        # here for the same reason the loop skips them: no rate, so no cover to be
+        # below — and excluding them in SQL is what keeps them from crowding out the
+        # variants that do have one.
         rows = self.store.rows(
             "SELECT l.variant_id AS variant_id, v.product_id AS product_id, v.title AS title, "
             "SUM(l.on_hand) AS on_hand, SUM(l.reserved) AS reserved, "
-            "SUM(l.on_hand - l.reserved) AS sellable, MIN(l.location_id) AS location_id "
+            "SUM(l.on_hand - l.reserved) AS sellable, MIN(l.location_id) AS location_id, "
+            "s.units AS units "
             "FROM inventory_levels l JOIN catalog_variants v ON v.id = l.variant_id "
             "JOIN catalog_products p ON p.id = v.product_id "
-            "WHERE v.status = 'active' AND p.status = 'active' "
-            "GROUP BY l.variant_id, v.product_id, v.title ORDER BY sellable, l.variant_id LIMIT ?",
-            (max(1, limit) * 6,))
+            "JOIN (SELECT ol.variant_id AS variant_id, SUM(ol.quantity) AS units "
+            "FROM commerce_order_lines ol JOIN commerce_orders o ON o.id = ol.order_id "
+            f"WHERE o.status = 'paid' AND o.origin IN ({placeholders}) AND o.created_at >= ? "
+            "GROUP BY ol.variant_id) s ON s.variant_id = l.variant_id "
+            "WHERE v.status = 'active' AND p.status = 'active' AND s.units > 0 "
+            "GROUP BY l.variant_id, v.product_id, v.title, s.units "
+            "ORDER BY (SUM(l.on_hand - l.reserved) * 1.0 * ?) / s.units, l.variant_id LIMIT ?",
+            (*self.origins, _cutoff(window), window, max(1, limit) * 2))
         alerts: list[InventoryAlert] = []
         for row in rows:
             sellable = int(row["sellable"])
-            units = self._sold_by_variant(row["variant_id"], window)
+            units = int(row["units"])
             cover = days_of_cover(
                 variant_id=row["variant_id"], sellable=sellable, units_sold=units,
                 window_days=window)
             # An item with no sales rate has no cover to be below; it is slow stock,
             # not a stockout risk, and saying otherwise would be a claim with no basis.
-            if cover.value is None or cover.value > ALERT_COVER_DAYS:
+            # The rows arrive in ascending cover, so the first one over the threshold
+            # means every one after it is too.
+            if cover.value is None:
                 continue
+            if cover.value > ALERT_COVER_DAYS:
+                break
             alerts.append(InventoryAlert(
                 variant_id=row["variant_id"], product_id=row["product_id"], title=row["title"],
                 sellable=sellable, on_hand=int(row["on_hand"]), reserved=int(row["reserved"]),

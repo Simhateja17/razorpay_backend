@@ -212,7 +212,6 @@ class CartisanToolExecutor(BaseToolExecutor):
             {
                 **_variant_payload(details),
                 "description": details.description,
-                "specifications": details.specs,
                 "capabilities": details.capabilities,
                 "requirements": details.requirements,
                 "siblings": [_variant_payload(sibling) for sibling in details.siblings],
@@ -394,6 +393,7 @@ def _variant_payload(variant: Any) -> dict[str, Any]:
         "currency": variant.currency,
         "in_stock": variant.in_stock,
         "options": variant.options,
+        "specifications": variant.specs,
     }
 
 

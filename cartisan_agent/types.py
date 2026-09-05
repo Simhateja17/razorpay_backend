@@ -41,6 +41,7 @@ class Variant(BaseModel):
     sellable: int = 0
     options: dict[str, str] = Field(default_factory=dict)
     origin: str = "seeded"
+    specs: dict[str, str] = Field(default_factory=dict)
 
     @property
     def price(self) -> str:
@@ -49,7 +50,6 @@ class Variant(BaseModel):
 
 class VariantDetails(Variant):
     description: str = ""
-    specs: dict[str, str] = Field(default_factory=dict)
     capabilities: dict[str, str] = Field(default_factory=dict)
     requirements: list[str] = Field(default_factory=list)
     siblings: list[Variant] = Field(default_factory=list)

@@ -162,7 +162,6 @@ class CoreCommercePort(CommercePort):
         return VariantDetails(
             **base.model_dump(),
             description=description[0]["description"] if description else "",
-            specs=self._specs(variant_id),
             capabilities=self._capabilities(variant_id),
             requirements=[
                 requirement["explanation"]
@@ -435,6 +434,7 @@ class CoreCommercePort(CommercePort):
             sellable=sellable,
             options=self.store.load(row["options"]) if row.get("options") else {},
             origin=row.get("origin") or "seeded",
+            specs=self._specs(variant_id),
         )
 
     def _price(self, variant_id: str) -> int:

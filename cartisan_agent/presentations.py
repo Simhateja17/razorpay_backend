@@ -216,6 +216,7 @@ def _card(variant: Variant) -> dict[str, Any]:
         "currency": variant.currency,
         "in_stock": variant.in_stock,
         "options": variant.options,
+        "specifications": variant.specs,
     }
 
 

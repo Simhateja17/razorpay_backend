@@ -28,6 +28,27 @@ DEFAULT_SEED = 20260904
 HISTORY_DAYS = 90
 SEED_PREFIX = "sd_"
 
+# Numeric specs where a smaller number is the better product (quieter, lighter).
+# Every other numeric spec in domain.LINES climbs with price.
+_LOWER_IS_BETTER: frozenset[str] = frozenset({"noise_db", "weight_g"})
+
+
+def _tier_scaled(line_key: str, spec_key: str, value: object, tier_fraction: float) -> object:
+    """A line declares one representative spec value; the edition's price tier
+    (0.0 cheapest, 1.0 dearest) spreads it into a real range, so two editions of the
+    same line actually differ on more than price. Text specs (a hardness grade, a
+    switch feel) are not on a continuum and are left as declared."""
+    if isinstance(value, bool):
+        # A different, deterministic threshold per (line, spec) so features unlock
+        # at different price points instead of every boolean flipping together.
+        threshold = (sum(ord(c) for c in f"{line_key}:{spec_key}") % 60) / 100
+        return tier_fraction >= threshold
+    if isinstance(value, (int, float)):
+        factor = (1.2 - 0.4 * tier_fraction) if spec_key in _LOWER_IS_BETTER else (0.8 + 0.4 * tier_fraction)
+        scaled = value * factor
+        return round(scaled) if isinstance(value, int) else round(scaled, 1)
+    return value
+
 # Deletion runs children-before-parents so foreign keys hold at every step.
 _RESET_ORDER: tuple[tuple[str, str], ...] = (
     ("evidence_records", "id"),
@@ -241,6 +262,9 @@ class CommerceGenerator:
                 # Editions climb in price across the line's declared range.
                 span = max(1, len(editions) - 1)
                 base_price = base_low + (base_high - base_low) * edition_index // span
+                # Specs climb with price the same way, so a comparison has real feature
+                # differences to point at instead of price being the only signal.
+                tier_fraction = edition_index / span
 
                 model = domain.DEVICE_MODELS[edition_index % len(domain.DEVICE_MODELS)]
                 for value_index, value in enumerate(line.variant_values):
@@ -260,7 +284,9 @@ class CommerceGenerator:
                         None, "list", _iso(self.as_of - timedelta(days=HISTORY_DAYS)), None))
                     self.counts.add("variant_prices")
 
-                    specs.extend(self._spec_rows(variant_id, line, line.variant_axis, value))
+                    specs.extend(
+                        self._spec_rows(variant_id, line, line.variant_axis, value, tier_fraction)
+                    )
                     caps.extend(self._capability_rows(variant_id, line, model))
                     reqs.extend(self._requirement_rows(variant_id, line, model))
 
@@ -299,10 +325,13 @@ class CommerceGenerator:
         start = sum(ord(c) for c in line.key) % len(domain.EDITIONS)
         return [domain.EDITIONS[(start + i) % len(domain.EDITIONS)] for i in range(span)]
 
-    def _spec_rows(self, variant_id: str, line: domain.Line, axis: str, value: str) -> list[tuple]:
+    def _spec_rows(
+        self, variant_id: str, line: domain.Line, axis: str, value: str, tier_fraction: float
+    ) -> list[tuple]:
         rows = [self._typed_spec(variant_id, axis, value)]
         for key, spec_value, unit in line.specs:
-            rows.append(self._typed_spec(variant_id, key, spec_value, unit))
+            scaled = _tier_scaled(line.key, key, spec_value, tier_fraction)
+            rows.append(self._typed_spec(variant_id, key, scaled, unit))
         return rows
 
     @staticmethod

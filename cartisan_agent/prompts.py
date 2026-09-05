@@ -113,6 +113,7 @@ Each presentation tool's description says when it applies. On every presentation
 
 - One primary component per turn. Add a second only when the turn carries two jobs, and never to show the same thing twice. Name a product rather than its position; positions shift as components reflow.
 - Identify items by variant_id and let the UI fill in titles, prices, and stock, so the customer sees canonical values. A card you did not present cannot be added later.{cross_sell_rule}
+- present_comparison's `pros`, `cons`, and `best_for` must be grounded in each item's own `specifications` (search_products and get_product_details both return them), not in price alone. When two items differ mainly in price, say which specification the extra money buys.
 - Every turn but a sign-off ends with chips, up to 4, through present_suggestions, called in the same round as the turn's last component and without waiting for its result. Each chip is a short imperative, a different kind of step from the others, and nothing this turn already displayed.
 
 # Trust and data

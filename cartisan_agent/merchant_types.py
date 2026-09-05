@@ -70,6 +70,10 @@ class MetricPoint(BaseModel):
     date: str
     value: float | int
     orders: int | None = None
+    # Grouped series use ``date`` as their display label for compatibility with
+    # the chart component.  Catalogue breakdowns also carry the stable id so an
+    # agent can identify the winning product/variant without guessing from text.
+    bucket_id: str | None = None
 
 
 class MetricSeries(BaseModel):

@@ -618,7 +618,8 @@ def build_merchant_tools(
                     ),
                     "window_days": {"type": "integer", "minimum": 1, "maximum": 90},
                     "group_by": _string(
-                        "Optional breakdown.", enum=["day", "category", "brand", "origin"]
+                        "Optional breakdown. Use product or variant to rank best sellers.",
+                        enum=["day", "category", "brand", "origin", "product", "variant"],
                     ),
                 },
                 ["metric"],

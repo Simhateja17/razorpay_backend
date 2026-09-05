@@ -220,33 +220,38 @@ class CoreMerchantPort(MerchantPort):
     def _grouped_series(self, metric: str, window: int, group_by: str) -> MetricSeries:
         placeholders = ",".join("?" for _ in self.origins)
         columns = {
-            "category": "COALESCE(c.name,'uncategorised')",
-            "brand": "p.brand",
-            "origin": "o.origin",
+            "category": ("COALESCE(c.name,'uncategorised')", None),
+            "brand": ("p.brand", None),
+            "origin": ("o.origin", None),
+            "product": ("p.title", "p.id"),
+            "variant": ("p.title || ' — ' || v.title", "v.id"),
         }
         if group_by not in columns:
             raise Unavailable(
                 f"{group_by!r} is not a breakdown Cartisan carries. Available: "
-                "day, category, brand, origin."
+                "day, category, brand, origin, product, variant."
             )
-        column = columns[group_by]
+        column, id_column = columns[group_by]
+        select_id = f", {id_column} AS bucket_id" if id_column else ", NULL AS bucket_id"
+        group_id = f", {id_column}" if id_column else ""
         value = {"revenue": "COALESCE(SUM(l.amount_minor),0)",
                  "units": "COALESCE(SUM(l.quantity),0)",
                  "orders": "COUNT(DISTINCT o.id)"}[metric]
         rows = self.store.rows(
-            f"SELECT {column} AS bucket, {value} AS value, COUNT(DISTINCT o.id) AS orders "
+            f"SELECT {column} AS bucket{select_id}, {value} AS value, "
+            "COUNT(DISTINCT o.id) AS orders "
             "FROM commerce_orders o "
             "JOIN commerce_order_lines l ON l.order_id = o.id "
             "JOIN catalog_variants v ON v.id = l.variant_id "
             "JOIN catalog_products p ON p.id = v.product_id "
             "LEFT JOIN catalog_categories c ON c.id = p.category_id "
             f"WHERE o.status='paid' AND o.origin IN ({placeholders}) AND o.created_at >= ? "
-            f"GROUP BY {column} ORDER BY value DESC",
+            f"GROUP BY {column}{group_id} ORDER BY value DESC",
             (*self.origins, _cutoff(window)))
         unit = {"revenue": "INR paise", "units": "units", "orders": "orders"}[metric]
         points = [
             MetricPoint(date=str(row["bucket"]), value=_number(row["value"]),
-                        orders=int(row["orders"]))
+                        orders=int(row["orders"]), bucket_id=row.get("bucket_id"))
             for row in rows
         ]
         return MetricSeries(

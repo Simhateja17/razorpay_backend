@@ -569,6 +569,26 @@ async def test_a_metric_the_event_log_cannot_support_is_unavailable_not_zero(exe
     assert "not a metric Cartisan derives" in outcome.result_text
 
 
+async def test_product_revenue_ranking_identifies_the_best_seller(world):
+    series = await world.port.query_metrics(
+        merchant_session(), "revenue", 30, "product")
+    assert series.group_by == "product"
+    assert series.points[0].model_dump() == {
+        "date": "Nimbus travel charger",
+        "value": 3_498_600,
+        "orders": 4,
+        "bucket_id": "sd_prod_charger",
+    }
+    assert series.points[1].bucket_id == "sd_prod_laptop"
+
+
+async def test_variant_units_ranking_carries_stable_variant_ids(world):
+    series = await world.port.query_metrics(
+        merchant_session(), "units", 30, "variant")
+    assert series.points[0].bucket_id == GOOD_CHARGER
+    assert series.points[0].value == 14
+
+
 async def test_a_movement_is_reported_as_a_difference_and_never_as_a_cause(executor):
     outcome = await executor.execute("get_business_snapshot", {"window_days": 7})
     assert not outcome.refused

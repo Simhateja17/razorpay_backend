@@ -469,6 +469,11 @@ create index if not exists commerce_events_origin_idx on commerce_events (origin
 create table if not exists merchant_changes (
   id text primary key,
   operator_id text not null,
+  -- The conversation the proposal was staged in. A decided change is part of that
+  -- conversation's history and is shown with it; a pending one is outstanding work
+  -- and is shown to the operator wherever they are. Nullable because a change staged
+  -- outside a conversation (a script, a scenario pack) still belongs in the queue.
+  conversation_id text,
   kind text not null check (kind in
     ('inventory_action', 'price_update', 'promotion', 'campaign', 'listing_update')),
   target_type text not null,
@@ -485,6 +490,7 @@ create table if not exists merchant_changes (
 );
 
 create index if not exists merchant_changes_status_idx on merchant_changes (status, created_at);
+create index if not exists merchant_changes_conversation_idx on merchant_changes (conversation_id, created_at);
 
 create table if not exists merchant_approvals (
   id text primary key,

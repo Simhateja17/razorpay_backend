@@ -70,6 +70,7 @@ class MerchantChangeRepository:
 
     def stage(self, *, operator_id: str, kind: str, target_type: str, target_id: str | None,
               before: dict, after: dict, rationale: str,
+              conversation_id: str | None = None,
               correlation: Correlation | None = None) -> dict:
         """Record a proposal. Always `pending`; never applies anything."""
         correlation = correlation or Correlation()
@@ -94,10 +95,11 @@ class MerchantChangeRepository:
         change_id = _id("chg")
         with self.store.transaction() as tx:
             tx.execute(
-                "INSERT INTO merchant_changes (id,operator_id,kind,target_type,target_id,"
-                "before_doc,after_doc,rationale,status,created_at) VALUES (?,?,?,?,?,?,?,?,'pending',?)",
-                (change_id, operator_id, kind, target_type, target_id, json.dumps(before),
-                 json.dumps(after), rationale, _now()))
+                "INSERT INTO merchant_changes (id,operator_id,conversation_id,kind,target_type,"
+                "target_id,before_doc,after_doc,rationale,status,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,'pending',?)",
+                (change_id, operator_id, conversation_id, kind, target_type, target_id,
+                 json.dumps(before), json.dumps(after), rationale, _now()))
             self.ledger.record(
                 actor=actor, action="stage_merchant_change", reason=rationale, outcome="applied",
                 target_type=target_type, target_id=target_id,
@@ -120,11 +122,25 @@ class MerchantChangeRepository:
         return [self.read(row["id"]) for row in self.store.rows(
             "SELECT id FROM merchant_changes WHERE status='pending' ORDER BY created_at LIMIT ?", (limit,))]
 
-    def recent(self, limit: int = 50) -> list[dict]:
-        """Everything the approval surface shows: pending first, then what was decided."""
+    def recent(self, limit: int = 50, conversation_id: str | None = None) -> list[dict]:
+        """Everything the approval surface shows: pending first, then what was decided.
+
+        The two halves are scoped differently on purpose. A pending change is work the
+        operator still owes an answer on, so it follows them into any conversation. A
+        decided one is a record of what was already answered, and it belongs to the
+        conversation it was staged in — carrying it into a fresh chat would show an
+        operator a rejection they made somewhere else as if it had just happened.
+        Passing no `conversation_id` keeps the unscoped view, which is what the
+        evidence surface and the tests read.
+        """
+        if conversation_id is None:
+            return [self.read(row["id"]) for row in self.store.rows(
+                "SELECT id FROM merchant_changes ORDER BY "
+                "CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT ?", (limit,))]
         return [self.read(row["id"]) for row in self.store.rows(
-            "SELECT id FROM merchant_changes ORDER BY "
-            "CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT ?", (limit,))]
+            "SELECT id FROM merchant_changes WHERE status='pending' OR conversation_id=? "
+            "ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT ?",
+            (conversation_id, limit))]
 
     def approvals(self, change_id: str) -> list[dict]:
         return self.store.rows(

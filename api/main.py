@@ -529,10 +529,16 @@ async def portal_metrics(metric: str, window_days: int = 30, group_by: str | Non
 
 
 @app.get("/portal/changes")
-def portal_changes(limit: int = 50, principal: Principal = Depends(require_operator)):
+def portal_changes(limit: int = 50, conversation_id: str | None = None,
+                   principal: Principal = Depends(require_operator)):
     """The approval queue: what is waiting, and what was decided, each with the exact
-    before-and-after documents the agent staged."""
-    return merchant_service.changes_list(limit=min(limit, 200))
+    before-and-after documents the agent staged.
+
+    `conversation_id` narrows the decided half to proposals staged in that
+    conversation. Pending ones are always returned: they are unanswered work, not
+    conversation history."""
+    return merchant_service.changes_list(
+        limit=min(limit, 200), conversation_id=conversation_id)
 
 
 @app.get("/portal/changes/{change_id}")

@@ -83,10 +83,15 @@ class MerchantService:
             self.session(operator_id), metric, window_days, group_by)
         return series.model_dump()
 
-    def changes_list(self, limit: int = 50) -> list[dict]:
+    def changes_list(self, limit: int = 50, conversation_id: str | None = None) -> list[dict]:
         """What the approval queue shows: pending first, then what was decided, each
-        carrying the approvals recorded against it."""
-        return [self._decorate(change) for change in self.changes.recent(limit=limit)]
+        carrying the approvals recorded against it.
+
+        `conversation_id` scopes the decided half to one conversation; pending changes
+        are never scoped, because an unanswered proposal is outstanding wherever the
+        operator is standing."""
+        return [self._decorate(change)
+                for change in self.changes.recent(limit=limit, conversation_id=conversation_id)]
 
     def change(self, change_id: str) -> dict:
         try:

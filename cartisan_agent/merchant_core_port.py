@@ -616,6 +616,7 @@ class CoreMerchantPort(MerchantPort):
             row = self.changes.stage(
                 operator_id=session.operator_id, kind=kind, target_type=target_type,
                 target_id=target_id, before=before, after=after, rationale=rationale,
+                conversation_id=session.conversation_id,
                 correlation=Correlation(
                     correlation_id=getattr(session, "correlation_id", None) or Correlation().correlation_id,
                     turn_id=getattr(session, "turn_id", None),

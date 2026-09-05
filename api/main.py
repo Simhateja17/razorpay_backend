@@ -42,6 +42,7 @@ from marketplace_backend.recovery import (
 )
 from marketplace_backend.shopping import CheckoutRefused, ShoppingService
 from cartisan_agent.outcomes import Unavailable
+from cartisan_agent.types import PageContext
 from marketplace_backend.store import Store
 
 from cartisan_agent import (
@@ -161,6 +162,7 @@ app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS","http:
 class ChatRequest(BaseModel):
     conversation_id: str = Field(default="default",min_length=1,max_length=100)
     message: str = Field(min_length=1,max_length=2000)
+    variant_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 # Carts are variant-keyed. A variant is the thing that has a price, a stock level
 # and an order line, so it is the only id the cart, the stage and the order share.
@@ -299,6 +301,10 @@ async def storefront_chat(body: ChatRequest, principal: Principal = Depends(requ
     session = SessionContext(conversation_id=key, customer_id=principal.id,
                              correlation_id=correlation.correlation_id,
                              demo_run_id=correlation.demo_run_id)
+    if body.variant_id:
+        details = await catalog_variant(body.variant_id)
+        session.page = PageContext(page_type="product", variant_id=body.variant_id,
+                                   extra={"product": details})
     messages.append({"role": "user", "content": body.message})
 
     async def stream() -> AsyncIterator[str]:
@@ -394,6 +400,19 @@ def portal_resume(conversation_id: str, principal: Principal = Depends(require_o
 def catalog():
     """The normalized catalogue. Every buyable id here is a variant id."""
     return shopping.catalog()
+
+
+@app.get("/catalog/variants/{variant_id}")
+async def catalog_variant(variant_id: str):
+    active = shopping.store.rows(
+        "SELECT v.id FROM catalog_variants v JOIN catalog_products p ON p.id = v.product_id "
+        "WHERE v.id = ? AND v.status = 'active' AND p.status = 'active'", (variant_id,))
+    if not active:
+        raise HTTPException(404, "This product is no longer available.")
+    details = await shopping.port.get_product_details(shopping.session("catalog"), variant_id)
+    if details is None:
+        raise HTTPException(404, "Product not found.")
+    return details.model_dump()
 
 @app.get("/cart")
 async def cart(principal: Principal = Depends(require_customer)):
